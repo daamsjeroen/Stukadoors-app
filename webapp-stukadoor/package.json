@@ -1,15 +1,2670 @@
-{
-  "name": "mijn-projectnaam",
-  "private": true,
-  "version": "0.0.0",
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview"
-  },
-  "devDependencies": {
-    "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+import React, { useState, useEffect, createContext, useContext, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signOut } from 'firebase/auth';
+import { getFirestore, collection, doc, getDoc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, getDocs, setDoc as firestoreSetDoc } from 'firebase/firestore';
+import jsPDF from 'jspdf';
+import 'jspdf-autotable';
+
+const AppContext = createContext(null);
+
+const useAppContext = () => useContext(AppContext);
+
+const formatDate = (date) => {
+  const d = new Date(date);
+  return d.toLocaleDateString('nl-NL', { year: 'numeric', month: 'long', day: 'numeric' });
+};
+
+const formatTime = (date) => {
+  const d = new Date(date);
+  return d.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' });
+};
+
+const MessageBox = ({ message, onClose }) => {
+  if (!message) return null;
+  return (
+    <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full text-center">
+        <p className="text-lg mb-4">{message}</p>
+        <button
+          onClick={onClose}
+          className="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-md transition duration-300 ease-in-out"
+        >
+          OK
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const parseAddress = (fullAddress) => {
+  let street = '';
+  let houseNumber = '';
+  let postalCode = '';
+  let city = '';
+  if (fullAddress) {
+    const parts = fullAddress.split(',').map(p => p.trim());
+    if (parts.length > 0) {
+      const streetHouseNum = parts[0];
+      const streetMatch = streetHouseNum.match(/^(.*?)\s*(\d+[a-zA-Z]?)$/);
+      if (streetMatch && streetMatch[1] && streetMatch[2]) {
+        street = streetMatch[1].trim();
+        houseNumber = streetMatch[2].trim();
+      } else {
+        street = streetHouseNum;
+      }
+      if (parts.length > 1) {
+        const postalCity = parts[1];
+        const postalCityMatch = postalCity.match(/^(\d{4}\s*[A-Z]{2})\s*(.*)$/);
+        if (postalCityMatch && postalCityMatch[1] && postalCityMatch[2]) {
+          postalCode = postalCityMatch[1].trim();
+          city = postalCityMatch[2].trim();
+        } else {
+          city = postalCity;
+        }
+      }
+    }
   }
+  return { street, houseNumber, postalCode, city };
+};
+
+const LoginScreen = ({ onLoginSuccess, auth, showMessage }) => {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    showMessage('Inloggen is niet beschikbaar in deze demo. U wordt automatisch ingelogd als anonieme gebruiker.', true);
+  };
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-100 to-indigo-200 p-4">
+      <div className="bg-white p-8 rounded-lg shadow-2xl w-full max-w-md">
+        <h2 className="text-3xl font-extrabold text-center text-gray-800 mb-8">Welkom bij Stukadoorsbeheer</h2>
+        <form onSubmit={handleLogin} className="space-y-6">
+          <div>
+            <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1">E-mailadres</label>
+            <input
+              type="email"
+              id="email"
+              className="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+              placeholder="jouw@email.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              disabled={loading}
+            />
+          </div>
+          <div>
+            <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1">Wachtwoord</label>
+            <input
+              type="password"
+              id="password"
+              className="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+              placeholder="********"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              disabled={loading}
+            />
+          </div>
+          <button
+            type="submit"
+            className="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-lg font-semibold text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition duration-300 ease-in-out transform hover:scale-105"
+            disabled={loading}
+          >
+            {loading ? 'Inloggen...' : 'Inloggen'}
+          </button>
+        </form>
+        <div className="mt-6 text-center">
+          <a htmlFor="#" onClick={() => showMessage('Neem contact op met de beheerder om uw wachtwoord te resetten.', true)} className="text-sm text-blue-600 hover:text-blue-500">Wachtwoord vergeten?</a>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const Header = ({ onNavigate, onLogout, userId }) => {
+  const [showMenu, setShowMenu] = useState(false);
+  return (
+    <header className="bg-blue-700 text-white shadow-lg p-4 flex justify-between items-center rounded-b-xl relative z-10">
+      <div className="flex items-center">
+        <img src="https://firebasestorage.googleapis.com/v0/b/generative-ai-docs.appspot.com/o/uploaded%3A63696380%20(2)%20kopie.jpg-01a0e888-4c78-47c5-95de-2438404f18b6?alt=media&token=1255e55e-26a9-4629-9e80-77987e076632" onError={(e) => { e.target.onerror = null; e.target.src="https://placehold.co/60x60/cccccc/333333?text=Logo"; }} alt="JDams STUCWERKEN Logo" className="h-16 w-auto mr-4 rounded-full p-1 bg-white shadow-md" />
+        <h1 className="text-2xl font-bold">Stukadoorsbedrijf App</h1>
+      </div>
+      <div className="relative">
+        <button
+          onClick={() => setShowMenu(!showMenu)}
+          className="bg-blue-600 hover:bg-blue-800 text-white font-bold py-2 px-4 rounded-md transition duration-300 ease-in-out flex items-center"
+        >
+          Menu
+          <svg className="ml-2 -mr-0.5 h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+          </svg>
+        </button>
+        {showMenu && (
+          <div className="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg py-1 ring-1 ring-black ring-opacity-5 focus:outline-none" role="menu" aria-orientation="vertical" aria-labelledby="menu-button">
+            <button
+              onClick={() => { onNavigate('materials'); setShowMenu(false); }}
+              className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 w-full text-left"
+              role="menuitem"
+            >
+              Materialen
+            </button>
+            <button
+              onClick={() => { onNavigate('settings'); setShowMenu(false); }}
+              className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 w-full text-left"
+              role="menuitem"
+            >
+              Instellingen
+            </button>
+            <button
+              onClick={() => { onLogout(); setShowMenu(false); }}
+              className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 w-full text-left"
+              role="menuitem"
+            >
+              Uitloggen
+            </button>
+          </div>
+        )}
+      </div>
+      {userId && (
+        <div className="text-sm mt-2 opacity-80 hidden sm:block">
+          Gebruikers ID: <span className="font-mono">{userId}</span>
+        </div>
+      )}
+    </header>
+  );
+};
+
+const BottomNavBar = ({ onNavigate, currentView }) => {
+  return (
+    <nav className="fixed bottom-0 left-0 right-0 bg-blue-700 text-white shadow-lg p-3 flex justify-around items-center rounded-t-xl z-10">
+      <button
+        onClick={() => onNavigate('projects')}
+        className={`flex-1 text-center py-2 rounded-md ${currentView === 'projects' ? 'bg-blue-800' : 'hover:bg-blue-600'} transition duration-200 text-lg font-medium`}
+      >
+        Projecten
+      </button>
+      <button
+        onClick={() => onNavigate('customers')}
+        className={`flex-1 text-center py-2 rounded-md ${currentView === 'customers' ? 'bg-blue-800' : 'hover:bg-blue-600'} transition duration-300 ease-in-out text-lg font-medium`}
+      >
+        Klanten
+      </button>
+      <button
+        onClick={() => onNavigate('weekPlanning')}
+        className={`flex-1 text-center py-2 rounded-md ${currentView === 'weekPlanning' ? 'bg-blue-800' : 'hover:bg-blue-600'} transition duration-300 ease-in-out text-lg font-medium`}
+      >
+        Weekplanning
+      </button>
+    </nav>
+  );
+};
+
+const SettingsPage = () => {
+  const { db, userId, showMessage } = useAppContext();
+  const [importCustomersFile, setImportCustomersFile] = useState(null);
+  const [importMaterialsFile, setImportMaterialsFile] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [employees, setEmployees] = useState([]);
+  const [editingEmployee, setEditingEmployee] = useState(null);
+  const [employeeForm, setEmployeeForm] = useState({ name: '', email: '', role: 'stukadoor' });
+  const [showAddEmployeeForm, setShowAddEmployeeForm] = useState(false);
+  const [googleCalendarIcsUrl, setGoogleCalendarIcsUrl] = useState('');
+  const [weFactApiKey, setWeFactApiKey] = useState('');
+
+  useEffect(() => {
+    if (!db || !userId) return;
+    const settingsRef = doc(db, `artifacts/${__app_id}/users/${userId}/settings/general`);
+    const unsubscribe = onSnapshot(settingsRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setGoogleCalendarIcsUrl(docSnap.data().googleCalendarIcsUrl || '');
+        setWeFactApiKey(docSnap.data().weFactApiKey || '');
+      }
+    }, (error) => {
+      console.error("Error fetching settings:", error);
+      showMessage("Fout bij het laden van instellingen.", false);
+    });
+    return () => unsubscribe();
+  }, [db, userId, showMessage]);
+
+  const handleSaveGoogleCalendarUrl = async () => {
+    if (!db || !userId) {
+      showMessage("Geen databaseverbinding of gebruikers-ID beschikbaar.", false);
+      return;
+    }
+    try {
+      const settingsRef = doc(db, `artifacts/${__app_id}/users/${userId}/settings/general`);
+      await firestoreSetDoc(settingsRef, { googleCalendarIcsUrl }, { merge: true });
+      showMessage("Google Agenda URL succesvol opgeslagen!", true);
+    } catch (error) {
+      console.error("Fout bij opslaan Google Agenda URL:", error);
+      showMessage(`Fout bij opslaan Google Agenda URL: ${error.message}`, false);
+    }
+  };
+
+  const handleSaveWeFactApiKey = async () => {
+    if (!db || !userId) {
+      showMessage("Geen databaseverbinding of gebruikers-ID beschikbaar.", false);
+      return;
+    }
+    try {
+      const settingsRef = doc(db, `artifacts/${__app_id}/users/${userId}/settings/general`);
+      await firestoreSetDoc(settingsRef, { weFactApiKey }, { merge: true });
+      showMessage("WeFact API Sleutel succesvol opgeslagen!", true);
+    } catch (error) {
+      console.error("Fout bij opslaan WeFact API Sleutel:", error);
+      showMessage(`Fout bij opslaan WeFact API Sleutel: ${error.message}`, false);
+    }
+  };
+
+  useEffect(() => {
+    if (!db || !userId) return;
+    const employeesColRef = collection(db, `artifacts/${__app_id}/users/${userId}/employees`);
+    const unsubscribe = onSnapshot(employeesColRef, (snapshot) => {
+      const employeesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setEmployees(employeesData);
+    }, (error) => {
+      console.error("Fout bij het ophalen van werknemers:", error);
+      showMessage("Fout bij het laden van werknemers.", false);
+    });
+    return () => unsubscribe();
+  }, [db, userId, showMessage]);
+
+  const csvToJson = (csv) => {
+    const lines = csv.split('\n').filter(line => line.trim() !== '');
+    if (lines.length === 0) return [];
+    const headers = lines[0].split(',').map(header => header.trim());
+    const result = [];
+    for (let i = 1; i < lines.length; i++) {
+      const obj = {};
+      const currentline = lines[i].split(',');
+      for (let j = 0; j < headers.length; j++) {
+        obj[headers[j]] = currentline[j] ? currentline[j].trim() : '';
+      }
+      result.push(obj);
+    }
+    return result;
+  };
+
+  const jsonToCsv = (data, headers) => {
+    if (!data || data.length === 0) return '';
+    const csvRows = [];
+    csvRows.push(headers.join(','));
+    for (const row of data) {
+      const values = headers.map(header => {
+        const escaped = ('' + row[header]).replace(/"/g, '""');
+        return `"${escaped}"`;
+      });
+      csvRows.push(values.join(','));
+    }
+    return csvRows.join('\n');
+  };
+
+  const handleFileChange = (e, type) => {
+    if (type === 'customers') {
+      setImportCustomersFile(e.target.files[0]);
+    } else if (type === 'materials') {
+      setImportMaterialsFile(e.target.files[0]);
+    }
+  };
+
+  const handleImport = async (type) => {
+    if (!db || !userId) {
+      showMessage("Geen databaseverbinding of gebruikers-ID beschikbaar.", false);
+      return;
+    }
+    let fileToImport = null;
+    let collectionName = '';
+    let expectedHeaders = [];
+    if (type === 'customers') {
+      fileToImport = importCustomersFile;
+      collectionName = 'customers';
+      expectedHeaders = ['firstName', 'lastName', 'companyName', 'street_houseNumber', 'city', 'postalCode', 'phone', 'email'];
+    } else if (type === 'materials') {
+      fileToImport = importMaterialsFile;
+      collectionName = 'materials';
+      expectedHeaders = ['name', 'unit', 'price'];
+    }
+    if (!fileToImport) {
+      showMessage(`Selecteer een CSV-bestand om ${type} te importeren.`, false);
+      return;
+    }
+    setImporting(true);
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const text = e.target.result;
+      try {
+        const jsonData = csvToJson(text);
+        if (jsonData.length === 0) {
+          showMessage("Het CSV-bestand is leeg of ongeldig.", false);
+          setImporting(false);
+          return;
+        }
+        const actualHeaders = Object.keys(jsonData[0]);
+        const missingHeaders = expectedHeaders.filter(header => !actualHeaders.includes(header));
+        if (missingHeaders.length > 0) {
+          showMessage(`Ongeldig CSV-formaat. Ontbrekende kolommen: ${missingHeaders.join(', ')}. Verwacht: ${expectedHeaders.join(', ')}`, false);
+          setImporting(false);
+          return;
+        }
+        const batch = [];
+        for (const item of jsonData) {
+          if (type === 'customers') {
+            const fullAddress = `${item.street_houseNumber || ''}, ${item.postalCode || ''} ${item.city || ''}`.trim();
+            batch.push(addDoc(collection(db, `artifacts/${__app_id}/users/${userId}/${collectionName}`), {
+              firstName: item.firstName || '',
+              lastName: item.lastName || '',
+              companyName: item.companyName || '',
+              address: fullAddress,
+              phone: item.phone || '',
+              email: item.email || ''
+            }));
+          } else if (type === 'materials') {
+            batch.push(addDoc(collection(db, `artifacts/${__app_id}/users/${userId}/${collectionName}`), {
+              name: item.name,
+              unit: item.unit,
+              price: parseFloat(item.price) || 0
+            }));
+          }
+        }
+        await Promise.all(batch);
+        showMessage(`${jsonData.length} ${type} succesvol geïmporteerd!`, true);
+      } catch (error) {
+        console.error(`Fout bij importeren ${type}:`, error);
+        showMessage(`Fout bij importeren ${type}: ${error.message}`, false);
+      } finally {
+        setImporting(false);
+        if (type === 'customers') setImportCustomersFile(null);
+        if (type === 'materials') setImportMaterialsFile(null);
+        e.target.value = null;
+      }
+    };
+    reader.onerror = () => {
+      showMessage("Fout bij het lezen van het bestand.", false);
+      setImporting(false);
+    };
+    reader.readAsText(fileToImport);
+  };
+
+  const handleExport = async (type) => {
+    if (!db || !userId) {
+      showMessage("Geen databaseverbinding of gebruikers-ID beschikbaar.", false);
+      return;
+    }
+    setExporting(true);
+    let collectionName = '';
+    let headers = [];
+    let filename = '';
+    if (type === 'customers') {
+      collectionName = 'customers';
+      headers = ['firstName', 'lastName', 'companyName', 'street_houseNumber', 'city', 'postalCode', 'phone', 'email'];
+      filename = 'klanten.csv';
+    } else if (type === 'materials') {
+      collectionName = 'materials';
+      headers = ['name', 'unit', 'price'];
+      filename = 'materialen.csv';
+    }
+    try {
+      const querySnapshot = await getDocs(collection(db, `artifacts/${__app_id}/users/${userId}/${collectionName}`));
+      let data = querySnapshot.docs.map(doc => doc.data());
+      if (data.length === 0) {
+        showMessage(`Geen ${type} gevonden om te exporteren.`, false);
+        setExporting(false);
+        return;
+      }
+      if (type === 'customers') {
+        data = data.map(customer => {
+          const { street, houseNumber, postalCode, city } = parseAddress(customer.address);
+          return {
+            firstName: customer.firstName || '',
+            lastName: customer.lastName || '',
+            companyName: customer.companyName || '',
+            street_houseNumber: `${street} ${houseNumber}`.trim(),
+            postalCode: postalCode,
+            city: city,
+            address: undefined
+          };
+        });
+      }
+      const csvString = jsonToCsv(data, headers);
+      const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      showMessage(`${type} succesvol geëxporteerd!`, true);
+    } catch (error) {
+      console.error(`Fout bij exporteren ${type}:`, error);
+      showMessage(`Fout bij exporteren ${type}: ${error.message}`, false);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleEmployeeFormChange = (e) => {
+    const { name, value } = e.target;
+    setEmployeeForm(prev => ({ ...prev, [name]: value }));
+  };
+
+  const saveEmployee = async (e) => {
+    e.preventDefault();
+    if (!db || !userId) {
+      showMessage("Geen databaseverbinding of gebruikers-ID beschikbaar.", false);
+      return;
+    }
+    const { name, email, role } = employeeForm;
+    if (!name || !email || !role) {
+      showMessage("Vul alle verplichte velden in voor de werknemer.", false);
+      return;
+    }
+    try {
+      if (editingEmployee) {
+        const employeeRef = doc(db, `artifacts/${__app_id}/users/${userId}/employees`, editingEmployee.id);
+        await updateDoc(employeeRef, { name, email, role });
+        showMessage("Werknemer succesvol bijgewerkt!", true);
+      } else {
+        await addDoc(collection(db, `artifacts/${__app_id}/users/${userId}/employees`), { name, email, role });
+        showMessage("Werknemer succesvol toegevoegd!", true);
+      }
+      setEmployeeForm({ name: '', email: '', role: 'stukadoor' });
+      setEditingEmployee(null);
+      setShowAddEmployeeForm(false);
+    } catch (error) {
+      console.error("Fout bij opslaan werknemer:", error);
+      showMessage(`Fout bij opslaan werknemer: ${error.message}`, false);
+    }
+  };
+
+  const editEmployee = (employee) => {
+    setEditingEmployee(employee);
+    setEmployeeForm({ name: employee.name, email: employee.email, role: employee.role });
+    setShowAddEmployeeForm(true);
+  };
+
+  const deleteEmployee = async (id) => {
+    if (!db || !userId) {
+      showMessage("Geen databaseverbinding of gebruikers-ID beschikbaar.", false);
+      return;
+    }
+    if (window.confirm("Weet u zeker dat u deze werknemer wilt verwijderen?")) {
+      try {
+        await deleteDoc(doc(db, `artifacts/${__app_id}/users/${userId}/employees`, id));
+        showMessage("Werknemer succesvol verwijderd!", true);
+      } catch (error) {
+        console.error("Fout bij verwijderen werknemer:", error);
+        showMessage(`Fout bij verwijderen werknemer: ${error.message}`, false);
+      }
+    }
+  };
+
+  const handleAddEmployeeClick = () => {
+    setEditingEmployee(null);
+    setEmployeeForm({ name: '', email: '', role: 'stukadoor' });
+    setShowAddEmployeeForm(true);
+  };
+
+  const handleCancelEmployeeForm = () => {
+    setEditingEmployee(null);
+    setEmployeeForm({ name: '', email: '', role: 'stukadoor' });
+    setShowAddEmployeeForm(false);
+  };
+
+
+  return (
+    <div className="p-6 bg-gray-50 min-h-screen rounded-lg shadow-inner">
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">Instellingen</h2>
+      <div className="bg-white p-6 rounded-xl shadow-lg mb-8">
+        <h3 className="text-2xl font-semibold text-gray-700 mb-4">Werknemers</h3>
+        <p className="text-gray-700 mb-4">Beheer hier medewerkersaccounts en hun toegang tot de applicatie.</p>
+        <button
+          onClick={handleAddEmployeeClick}
+          className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300 ease-in-out mb-4"
+        >
+          Voeg nieuwe werknemer toe
+        </button>
+        {(showAddEmployeeForm || editingEmployee) && (
+          <div className="bg-gray-100 p-4 rounded-md border border-gray-200 mb-4">
+            <h4 className="text-xl font-semibold text-gray-700 mb-3">{editingEmployee ? 'Werknemer Bewerken' : 'Nieuwe Werknemer Toevoegen'}</h4>
+            <form onSubmit={saveEmployee} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="employeeName" className="block text-sm font-medium text-gray-700">Naam</label>
+                <input type="text" id="employeeName" name="name" value={employeeForm.name} onChange={handleEmployeeFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label htmlFor="employeeEmail" className="block text-sm font-medium text-gray-700">E-mail</label>
+                <input type="email" id="employeeEmail" name="email" value={employeeForm.email} onChange={handleEmployeeFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label htmlFor="employeeRole" className="block text-sm font-medium text-gray-700">Rol</label>
+                <select id="employeeRole" name="role" value={employeeForm.role} onChange={handleEmployeeFormChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+                  <option value="stukadoor">Stukadoor</option>
+                  <option value="beheerder">Beheerder</option>
+                </select>
+              </div>
+              <div className="md:col-span-2 flex gap-4">
+                <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300 ease-in-out">
+                  {editingEmployee ? 'Werknemer Opslaan' : 'Werknemer Toevoegen'}
+                </button>
+                <button type="button" onClick={handleCancelEmployeeForm} className="bg-gray-400 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300 ease-in-out">
+                  Annuleren
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+        {employees.length === 0 ? (
+          <p className="text-gray-600">Nog geen werknemers toegevoegd.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Naam</th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">E-mail</th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Rol</th>
+                  <th scope="col" className="relative px-6 py-3"><span className="sr-only">Acties</span></th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {employees.map((employee) => (
+                  <tr key={employee.id}>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{employee.name}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{employee.email}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{employee.role}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                      <button onClick={() => editEmployee(employee)} className="text-indigo-600 hover:text-indigo-900 mr-4">Bewerken</button>
+                      <button onClick={() => deleteEmployee(employee.id)} className="text-red-600 hover:text-red-900">Verwijderen</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white p-6 rounded-xl shadow-lg mb-8">
+        <h3 className="text-2xl font-semibold text-gray-700 mb-4">Importeren</h3>
+        <p className="text-gray-700 mb-4">Importeer gegevens in de applicatie via een CSV-bestand.</p>
+        
+        <div className="mb-4">
+          <label htmlFor="importCustomersCsv" className="block text-sm font-medium text-gray-700 mb-2">Klanten importeren (CSV)</label>
+          <input
+            type="file"
+            id="importCustomersCsv"
+            accept=".csv"
+            onChange={(e) => handleFileChange(e, 'customers')}
+            className="block w-full text-sm text-gray-900 border border-gray-300 rounded-lg cursor-pointer bg-gray-50 focus:outline-none"
+            disabled={importing}
+          />
+          <button
+            onClick={() => handleImport('customers')}
+            className="mt-3 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition duration-300 ease-in-out"
+            disabled={importing || !importCustomersFile}
+          >
+            {importing ? 'Importeren...' : 'Importeer Klanten'}
+          </button>
+          <p className="text-xs text-gray-500 mt-1">Verwachte kolommen: firstName, lastName, companyName, street_houseNumber, city, postalCode, phone, email</p>
+        </div>
+
+        <div>
+          <label htmlFor="importMaterialsCsv" className="block text-sm font-medium text-gray-700 mb-2">Materialen importeren (CSV)</label>
+          <input
+            type="file"
+            id="importMaterialsCsv"
+            accept=".csv"
+            onChange={(e) => handleFileChange(e, 'materials')}
+            className="block w-full text-sm text-gray-900 border border-gray-300 rounded-lg cursor-pointer bg-gray-50 focus:outline-none"
+            disabled={importing}
+          />
+          <button
+            onClick={() => handleImport('materials')}
+            className="mt-3 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition duration-300 ease-in-out"
+            disabled={importing || !importMaterialsFile}
+          >
+            {importing ? 'Importeren...' : 'Importeer Materialen'}
+          </button>
+          <p className="text-xs text-gray-500 mt-1">Verwachte kolommen: naam, unit, price</p>
+        </div>
+      </div>
+
+      <div className="bg-white p-6 rounded-xl shadow-lg mb-8">
+        <h3 className="text-2xl font-semibold text-gray-700 mb-4">Exporteren</h3>
+        <p className="text-gray-700 mb-4">Exporteer gegevens uit de applicatie naar een CSV-bestand.</p>
+        
+        <div className="mb-4">
+          <button
+            onClick={() => handleExport('customers')}
+            className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition duration-300 ease-in-out mr-3"
+            disabled={exporting}
+          >
+            {exporting ? 'Exporteren...' : 'Exporteer Klanten'}
+          </button>
+          <button
+            onClick={() => handleExport('materials')}
+            className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition duration-300 ease-in-out"
+            disabled={exporting}
+          >
+            {exporting ? 'Exporteren...' : 'Exporteer Materialen'}
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white p-6 rounded-xl shadow-lg">
+        <h3 className="text-2xl font-semibold text-gray-700 mb-4">Algemene Instellingen</h3>
+        <p className="text-gray-700">Algemene bedrijfsgegevens en applicatie-instellingen.</p>
+        <p className="text-gray-500 mt-2">Toekomstige functionaliteit: Bedrijfsnaam, contactgegevens, standaardtarieven.</p>
+      </div>
+
+      {/* Google Calendar Integration Settings */}
+      <div className="bg-white p-6 rounded-xl shadow-lg mt-8">
+        <h3 className="text-2xl font-semibold text-gray-700 mb-4">Google Agenda Integratie</h3>
+        <p className="text-gray-700 mb-4">Voer de openbare ICS-URL van je Google Agenda in om evenementen in de weekplanning te zien.</p>
+        <div className="flex flex-col sm:flex-row gap-4 items-end">
+          <div className="flex-grow w-full">
+            <label htmlFor="googleCalendarIcsUrl" className="block text-sm font-medium text-gray-700">ICS URL</label>
+            <input
+              type="text"
+              id="googleCalendarIcsUrl"
+              value={googleCalendarIcsUrl}
+              onChange={(e) => setGoogleCalendarIcsUrl(e.target.value)}
+              placeholder="https://calendar.google.com/calendar/ical/..."
+              className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+          </div>
+          <button
+            onClick={handleSaveGoogleCalendarUrl}
+            className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300 ease-in-out flex-shrink-0"
+          >
+            Opslaan
+          </button>
+        </div>
+        <p className="text-xs text-gray-500 mt-2">Zorg ervoor dat de Google Agenda openbaar is, anders kunnen evenementen niet worden opgehaald.</p>
+      </div>
+
+      {/* WeFact Integration Settings (New Section) */}
+      <div className="bg-white p-6 rounded-xl shadow-lg mt-8">
+        <h3 className="text-2xl font-semibold text-gray-700 mb-4">WeFact Integratie</h3>
+        <p className="text-gray-700 mb-4">Koppel met uw WeFact-account om facturen en klantgegevens te synchroniseren. Let op: Volledige integratie vereist een backend-server voor veilige API-communicatie.</p>
+        <div className="flex flex-col sm:flex-row gap-4 items-end">
+          <div className="flex-grow w-full">
+            <label htmlFor="weFactApiKey" className="block text-sm font-medium text-gray-700">WeFact API Sleutel</label>
+            <input
+              type="text"
+              id="weFactApiKey"
+              value={weFactApiKey}
+              onChange={(e) => setWeFactApiKey(e.target.value)}
+              placeholder="Voer uw WeFact API sleutel in"
+              className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+          </div>
+          <button
+            onClick={handleSaveWeFactApiKey}
+            className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300 ease-in-out flex-shrink-0"
+          >
+            Sleutel Opslaan
+          </button>
+        </div>
+        <p className="text-xs text-orange-500 mt-2">Directe synchronisatie van facturen en klantgegevens vereist een veilige backend-implementatie om uw API-sleutel te beschermen en complexe API-aanroepen af te handelen.</p>
+      </div>
+    </div>
+  );
+};
+
+// Customer Management Component
+const CustomersPage = ({ db, userId, showMessage }) => {
+  const [customers, setCustomers] = useState([]);
+  const [editingCustomer, setEditingCustomer] = useState(null); // null for new, object for edit
+  const [customerForm, setCustomerForm] = useState({ firstName: '', lastName: '', companyName: '', street: '', houseNumber: '', postalCode: '', city: '', phone: '', email: '' });
+  const [showAddCustomerForm, setShowAddCustomerForm] = useState(false); // New state to control form visibility
+  const [searchQuery, setSearchQuery] = useState(''); // New state for search query
+
+  useEffect(() => {
+    if (!db || !userId) return;
+    const customersColRef = collection(db, `artifacts/${__app_id}/users/${userId}/customers`);
+    const q = query(customersColRef);
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const customersData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setCustomers(customersData);
+    }, (error) => {
+      console.error("Fout bij het ophalen van klanten:", error);
+      showMessage("Fout bij het laden van klanten.", false);
+    });
+    return () => unsubscribe();
+  }, [db, userId, showMessage]);
+
+  const handleFormChange = (e) => {
+    const { name, value } = e.target;
+    setCustomerForm(prev => ({ ...prev, [name]: value }));
+  };
+
+  const saveCustomer = async (e) => {
+    e.preventDefault();
+    if (!db || !userId) {
+      showMessage("Geen databaseverbinding of gebruikers-ID beschikbaar.", false);
+      return;
+    }
+    const { firstName, lastName, companyName, street, houseNumber, postalCode, city, phone, email } = customerForm;
+    if (!firstName || !lastName || !street || !houseNumber || !postalCode || !city) {
+      showMessage("Vul alle verplichte velden in (voornaam, achternaam, straat, huisnummer, postcode, plaats).", false);
+      return;
+    }
+    const fullAddress = `${street} ${houseNumber}, ${postalCode} ${city}`;
+    try {
+      if (editingCustomer) {
+        const customerRef = doc(db, `artifacts/${__app_id}/users/${userId}/customers`, editingCustomer.id);
+        await updateDoc(customerRef, { firstName, lastName, companyName, address: fullAddress, phone, email });
+        showMessage("Klant succesvol bijgewerkt!", true);
+      } else {
+        await addDoc(collection(db, `artifacts/${__app_id}/users/${userId}/customers`), { firstName, lastName, companyName, address: fullAddress, phone, email });
+        showMessage("Klant succesvol toegevoegd!", true);
+      }
+      setCustomerForm({ firstName: '', lastName: '', companyName: '', street: '', houseNumber: '', postalCode: '', city: '', phone: '', email: '' });
+      setEditingCustomer(null);
+      setShowAddCustomerForm(false);
+    } catch (error) {
+      console.error("Fout bij opslaan klant:", error);
+      showMessage(`Fout bij opslaan klant: ${error.message}`, false);
+    }
+  };
+
+  const editCustomer = (customer) => {
+    const { street, houseNumber, postalCode, city } = parseAddress(customer.address);
+    setEditingCustomer(customer);
+    setCustomerForm({
+      firstName: customer.firstName || '',
+      lastName: customer.lastName || '',
+      companyName: customer.companyName || '',
+      street: street,
+      houseNumber: houseNumber,
+      postalCode: postalCode,
+      city: city,
+      phone: customer.phone,
+      email: customer.email
+    });
+    setShowAddCustomerForm(true);
+  };
+
+  const deleteCustomer = async (id) => {
+    if (!db || !userId) {
+      showMessage("Geen databaseverbinding of gebruikers-ID beschikbaar.", false);
+      return;
+    }
+    if (window.confirm("Weet u zeker dat u deze klant wilt verwijderen?")) {
+      try {
+        await deleteDoc(doc(db, `artifacts/${__app_id}/users/${userId}/customers`, id));
+        showMessage("Klant succesvol verwijderd!", true);
+      } catch (error) {
+        console.error("Fout bij verwijderen klant:", error);
+        showMessage(`Fout bij verwijderen klant: ${error.message}`, false);
+      }
+    }
+  };
+
+  const handleAddCustomerClick = () => {
+    setEditingCustomer(null);
+    setCustomerForm({ firstName: '', lastName: '', companyName: '', street: '', houseNumber: '', postalCode: '', city: '', phone: '', email: '' });
+    setShowAddCustomerForm(true);
+  };
+
+  const handleCancelForm = () => {
+    setEditingCustomer(null);
+    setCustomerForm({ firstName: '', lastName: '', companyName: '', street: '', houseNumber: '', postalCode: '', city: '', phone: '', email: '' });
+    setShowAddCustomerForm(false);
+  };
+
+  const filteredCustomers = customers.filter(customer => {
+    const lowerCaseQuery = searchQuery.toLowerCase();
+    const { street, houseNumber, postalCode, city } = parseAddress(customer.address);
+    return (
+      (customer.firstName && customer.firstName.toLowerCase().includes(lowerCaseQuery)) ||
+      (customer.lastName && customer.lastName.toLowerCase().includes(lowerCaseQuery)) ||
+      (customer.companyName && customer.companyName.toLowerCase().includes(lowerCaseQuery)) ||
+      `${street} ${houseNumber}`.toLowerCase().includes(lowerCaseQuery) ||
+      city.toLowerCase().includes(lowerCaseQuery) ||
+      postalCode.toLowerCase().includes(lowerCaseQuery) ||
+      customer.phone.toLowerCase().includes(lowerCaseQuery) ||
+      customer.email.toLowerCase().includes(lowerCaseQuery)
+    );
+  });
+
+  return (
+    <div className="p-6 bg-gray-50 min-h-screen rounded-lg shadow-inner">
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">Klantenbeheer</h2>
+      <div className="mb-8 flex flex-col sm:flex-row justify-between items-center gap-4">
+        <input
+          type="text"
+          placeholder="Zoek klanten..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="w-full sm:w-1/2 px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+        />
+        <button
+          onClick={handleAddCustomerClick}
+          className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-md shadow-lg transition duration-300 ease-in-out transform hover:scale-105 text-lg"
+        >
+          Voeg nieuwe klant toe
+        </button>
+      </div>
+      {(showAddCustomerForm || editingCustomer) && (
+        <div className="bg-white p-6 rounded-xl shadow-lg mb-8">
+          <h3 className="text-2xl font-semibold text-gray-700 mb-4">{editingCustomer ? 'Klant Bewerken' : 'Nieuwe Klant Toevoegen'}</h3>
+          <form onSubmit={saveCustomer} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label htmlFor="customerFirstName" className="block text-sm font-medium text-gray-700">Voornaam</label>
+              <input type="text" id="customerFirstName" name="firstName" value={customerForm.firstName} onChange={handleFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+            </div>
+            <div>
+              <label htmlFor="customerLastName" className="block text-sm font-medium text-gray-700">Achternaam</label>
+              <input type="text" id="customerLastName" name="lastName" value={customerForm.lastName} onChange={handleFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+            </div>
+            <div>
+              <label htmlFor="customerCompanyName" className="block text-sm font-medium text-gray-700">Bedrijfsnaam (optioneel)</label>
+              <input type="text" id="customerCompanyName" name="companyName" value={customerForm.companyName} onChange={handleFormChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+            </div>
+            <div>
+              <label htmlFor="customerStreet" className="block text-sm font-medium text-gray-700">Straat</label>
+              <input type="text" id="customerStreet" name="street" value={customerForm.street} onChange={handleFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+            </div>
+            <div>
+              <label htmlFor="customerHouseNumber" className="block text-sm font-medium text-gray-700">Huisnummer</label>
+              <input type="text" id="customerHouseNumber" name="houseNumber" value={customerForm.houseNumber} onChange={handleFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+            </div>
+            <div>
+              <label htmlFor="customerPostalCode" className="block text-sm font-medium text-gray-700">Postcode</label>
+              <input type="text" id="customerPostalCode" name="postalCode" value={customerForm.postalCode} onChange={handleFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+            </div>
+            <div>
+              <label htmlFor="customerCity" className="block text-sm font-medium text-gray-700">Plaats</label>
+              <input type="text" id="customerCity" name="city" value={customerForm.city} onChange={handleFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+            </div>
+            <div>
+              <label htmlFor="customerPhone" className="block text-sm font-medium text-gray-700">Telefoonnummer</label>
+              <input type="tel" id="customerPhone" name="phone" value={customerForm.phone} onChange={handleFormChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+            </div>
+            <div>
+              <label htmlFor="customerEmail" className="block text-sm font-medium text-gray-700">E-mailadres</label>
+              <input type="email" id="customerEmail" name="email" value={customerForm.email} onChange={handleFormChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+            </div>
+            <div className="md:col-span-2 flex gap-4">
+              <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300 ease-in-out transform hover:scale-105">
+                {editingCustomer ? 'Klant Opslaan' : 'Klant Toevoegen'}
+              </button>
+              <button type="button" onClick={handleCancelForm} className="bg-gray-400 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300 ease-in-out transform hover:scale-105">
+                Annuleren
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+      <div className="overflow-x-auto bg-white p-6 rounded-xl shadow-lg">
+        <h3 className="text-2xl font-semibold text-gray-700 mb-4">Klanten Overzicht</h3>
+        {filteredCustomers.length === 0 ? (
+          <p className="text-gray-600">Geen klanten gevonden die overeenkomen met je zoekopdracht.</p>
+        ) : (
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Voornaam</th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Achternaam</th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Bedrijfsnaam</th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Straat + Huisnr.</th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Plaats</th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Postcode</th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Telefoon</th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">E-mail</th>
+                <th scope="col" className="relative px-6 py-3"><span className="sr-only">Acties</span></th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {filteredCustomers.map((customer) => {
+                const { street, houseNumber, postalCode, city } = parseAddress(customer.address);
+                return (
+                  <tr key={customer.id}>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{customer.firstName}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{customer.lastName}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{customer.companyName || '-'}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{`${street} ${houseNumber}`}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{city}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{postalCode}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{customer.phone}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{customer.email}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                      <button onClick={() => editCustomer(customer)} className="text-indigo-600 hover:text-indigo-900 mr-4">Bewerken</button>
+                      <button onClick={() => deleteCustomer(customer.id)} className="text-red-600 hover:text-red-900">Verwijderen</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const MaterialsPage = ({ db, userId, showMessage }) => {
+  const [materials, setMaterials] = useState([]);
+  const [editingMaterial, setEditingMaterial] = useState(null);
+  const [materialForm, setMaterialForm] = useState({ name: '', unit: '', price: '' });
+  const [showAddMaterialForm, setShowAddMaterialForm] = useState(false); // New state to control form visibility
+  const [searchQuery, setSearchQuery] = useState(''); // New state for search query
+
+  useEffect(() => {
+    if (!db || !userId) return;
+    const materialsColRef = collection(db, `artifacts/${__app_id}/users/${userId}/materials`);
+    const q = query(materialsColRef);
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const materialsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setMaterials(materialsData);
+    }, (error) => {
+      console.error("Fout bij het ophalen van materialen:", error);
+      showMessage("Fout bij het laden van materialen.", false);
+    });
+    return () => unsubscribe();
+  }, [db, userId, showMessage]);
+
+  const handleFormChange = (e) => {
+    const { name, value } = e.target;
+    setMaterialForm(prev => ({ ...prev, [name]: value }));
+  };
+
+  const saveMaterial = async (e) => {
+    e.preventDefault();
+    if (!db || !userId) {
+      showMessage("Geen databaseverbinding of gebruikers-ID beschikbaar.", false);
+      return;
+    }
+    try {
+      const materialData = {
+        name: materialForm.name,
+        unit: materialForm.unit,
+        price: parseFloat(materialForm.price) || 0
+      };
+      if (editingMaterial) {
+        const materialRef = doc(db, `artifacts/${__app_id}/users/${userId}/materials`, editingMaterial.id);
+        await updateDoc(materialRef, materialData);
+        showMessage("Materiaal succesvol bijgewerkt!", true);
+      } else {
+        await addDoc(collection(db, `artifacts/${__app_id}/users/${userId}/materials`), materialData);
+        showMessage("Materiaal succesvol toegevoegd!", true);
+      }
+      setMaterialForm({ name: '', unit: '', price: '' });
+      setEditingMaterial(null);
+      setShowAddMaterialForm(false);
+    } catch (error) {
+      console.error("Fout bij opslaan materiaal:", error);
+      showMessage(`Fout bij opslaan materiaal: ${error.message}`, false);
+    }
+  };
+
+  const editMaterial = (material) => {
+    setEditingMaterial(material);
+    setMaterialForm({ name: material.name, unit: material.unit, price: material.price.toString() });
+    setShowAddMaterialForm(true);
+  };
+
+  const deleteMaterial = async (id) => {
+    if (!db || !userId) {
+      showMessage("Geen databaseverbinding of gebruikers-ID beschikbaar.", false);
+      return;
+    }
+    if (window.confirm("Weet u zeker dat u dit materiaal wilt verwijderen?")) {
+      try {
+        await deleteDoc(doc(db, `artifacts/${__app_id}/users/${userId}/materials`, id));
+        showMessage("Materiaal succesvol verwijderd!", true);
+      } catch (error) {
+        console.error("Fout bij verwijderen materiaal:", error);
+        showMessage(`Fout bij verwijderen materiaal: ${error.message}`, false);
+      }
+    }
+  };
+
+  const handleAddMaterialClick = () => {
+    setEditingMaterial(null);
+    setMaterialForm({ name: '', unit: '', price: '' });
+    setShowAddMaterialForm(true);
+  };
+
+  const handleCancelForm = () => {
+    setEditingMaterial(null);
+    setMaterialForm({ name: '', unit: '', price: '' });
+    setShowAddMaterialForm(false);
+  };
+
+  const filteredMaterials = materials.filter(material => {
+    const lowerCaseQuery = searchQuery.toLowerCase();
+    return (
+      material.name.toLowerCase().includes(lowerCaseQuery) ||
+      material.unit.toLowerCase().includes(lowerCaseQuery)
+    );
+  });
+
+  return (
+    <div className="p-6 bg-gray-50 min-h-screen rounded-lg shadow-inner">
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">Materialenbeheer</h2>
+      <div className="mb-8 flex flex-col sm:flex-row justify-between items-center gap-4">
+        <input
+          type="text"
+          placeholder="Zoek materialen..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="w-full sm:w-1/2 px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+        />
+        <button
+          onClick={handleAddMaterialClick}
+          className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-md shadow-lg transition duration-300 ease-in-out transform hover:scale-105 text-lg"
+        >
+          Voeg nieuw materiaal toe
+        </button>
+      </div>
+      {(showAddMaterialForm || editingMaterial) && (
+        <div className="bg-white p-6 rounded-xl shadow-lg mb-8">
+          <h3 className="text-2xl font-semibold text-gray-700 mb-4">{editingMaterial ? 'Materiaal Bewerken' : 'Nieuw Materiaal Toevoegen'}</h3>
+          <form onSubmit={saveMaterial} className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label htmlFor="materialName" className="block text-sm font-medium text-gray-700">Naam</label>
+              <input type="text" id="materialName" name="name" value={materialForm.name} onChange={handleFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+            </div>
+            <div>
+              <label htmlFor="materialUnit" className="block text-sm font-medium text-gray-700">Eenheid</label>
+              <input type="text" id="materialUnit" name="unit" value={materialForm.unit} onChange={handleFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+            </div>
+            <div>
+              <label htmlFor="materialPrice" className="block text-sm font-medium text-gray-700">Standaardprijs per eenheid</label>
+              <input type="number" id="materialPrice" name="price" value={materialForm.price} onChange={handleFormChange} step="0.01" className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+            </div>
+            <div className="md:col-span-3 flex gap-4">
+              <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300 ease-in-out transform hover:scale-105">
+                {editingMaterial ? 'Materiaal Opslaan' : 'Materiaal Toevoegen'}
+              </button>
+              <button type="button" onClick={handleCancelForm} className="bg-gray-400 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300 ease-in-out transform hover:scale-105">
+                Annuleren
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+      <div className="bg-white p-6 rounded-xl shadow-lg">
+        <h3 className="text-2xl font-semibold text-gray-700 mb-4">Materialen Overzicht</h3>
+        {filteredMaterials.length === 0 ? (
+          <p className="text-gray-600">Geen materialen gevonden die overeenkomen met je zoekopdracht.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Naam</th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Eenheid</th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Standaardprijs</th>
+                  <th scope="col" className="relative px-6 py-3"><span className="sr-only">Acties</span></th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {filteredMaterials.map((material) => (
+                  <tr key={material.id}>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{material.name}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{material.unit}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">€{material.price.toFixed(2)}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                      <button onClick={() => editMaterial(material)} className="text-indigo-600 hover:text-indigo-900 mr-4">Bewerken</button>
+                      <button onClick={() => deleteMaterial(material.id)} className="text-red-600 hover:text-red-900">Verwijderen</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const QuoteFormPage = ({ db, userId, onNavigate, showMessage }) => {
+  const [customers, setCustomers] = useState([]);
+  const [selectedCustomerId, setSelectedCustomerId] = useState('');
+  const [showNewCustomerForm, setShowNewCustomerForm] = useState(false);
+  const [newCustomerForm, setNewCustomerForm] = useState({ firstName: '', lastName: '', companyName: '', street: '', houseNumber: '', postalCode: '', city: '', phone: '', email: '' });
+  const [projectForm, setProjectForm] = useState({
+    name: '',
+    customerFirstName: '',
+    customerLastName: '',
+    customerCompanyName: '',
+    customerAddress: '',
+    customerPhone: '',
+    customerEmail: '',
+    projectStreet: '',
+    projectHouseNumber: '',
+    projectPostalCode: '',
+    projectCity: '',
+    desiredStartDate: '',
+    desiredEndDate: '',
+    wallsPlastering: '',
+    ceilingsPlastering: '',
+    jambs: '',
+    cornerGuards: '',
+    stucstops: '',
+    bathroomCementBase: '',
+    otherWork: '',
+    photos: '',
+    quoteStatus: 'Concept',
+  });
+  const [generatingDescription, setGeneratingDescription] = useState(false);
+
+  useEffect(() => {
+    if (!db || !userId) return;
+    const customersColRef = collection(db, `artifacts/${__app_id}/users/${userId}/customers`);
+    const q = query(customersColRef);
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const customersData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setCustomers(customersData);
+    }, (error) => {
+      console.error("Fout bij het ophalen van klanten:", error);
+      showMessage("Fout bij het laden van klanten voor offerte.", false);
+    });
+    return () => unsubscribe();
+  }, [db, userId, showMessage]);
+
+  useEffect(() => {
+    if (selectedCustomerId && selectedCustomerId !== 'new') {
+      const customer = customers.find(c => c.id === selectedCustomerId);
+      if (customer) {
+        const { street, houseNumber, postalCode, city } = parseAddress(customer.address);
+        setProjectForm(prev => ({
+          ...prev,
+          customerFirstName: customer.firstName || '',
+          customerLastName: customer.lastName || '',
+          customerCompanyName: customer.companyName || '',
+          customerAddress: customer.address,
+          customerPhone: customer.phone,
+          customerEmail: customer.email,
+          projectStreet: street,
+          projectHouseNumber: houseNumber,
+          projectPostalCode: postalCode,
+          projectCity: city,
+        }));
+      }
+    } else if (!showNewCustomerForm) {
+      setProjectForm(prev => ({
+        ...prev,
+        customerFirstName: '',
+        customerLastName: '',
+        customerCompanyName: '',
+        customerAddress: '',
+        customerPhone: '',
+        customerEmail: '',
+        projectStreet: '',
+        projectHouseNumber: '',
+        projectPostalCode: '',
+        projectCity: '',
+      }));
+    }
+  }, [selectedCustomerId, customers, showNewCustomerForm]);
+
+  const handleProjectFormChange = (e) => {
+    const { name, value } = e.target;
+    setProjectForm(prev => ({ ...prev, [name]: value }));
+  };
+
+  const handleNewCustomerFormChange = (e) => {
+    const { name, value } = e.target;
+    setNewCustomerForm(prev => ({ ...prev, [name]: value }));
+  };
+
+  const handleCustomerSelectionChange = (e) => {
+    const id = e.target.value;
+    setSelectedCustomerId(id);
+    setShowNewCustomerForm(id === 'new');
+  };
+
+  const saveProject = async (e) => {
+    e.preventDefault();
+    if (!db || !userId) {
+      showMessage("Geen databaseverbinding of gebruikers-ID beschikbaar.", false);
+      return;
+    }
+    const { projectStreet, projectHouseNumber, projectPostalCode, projectCity } = projectForm;
+    if (!projectStreet || !projectHouseNumber || !projectPostalCode || !projectCity) {
+      showMessage("Vul alle projectlocatievelden in (straat, huisnummer, postcode, plaats).", false);
+      return;
+    }
+    try {
+      let finalCustomerId = selectedCustomerId;
+      let customerFirstNameForProject = projectForm.customerFirstName;
+      let customerLastNameForProject = projectForm.customerLastName;
+      let customerCompanyNameForProject = projectForm.customerCompanyName;
+      let customerAddressForProject = projectForm.customerAddress;
+      let customerPhoneForProject = projectForm.customerPhone;
+      let customerEmailForProject = projectForm.customerEmail;
+      if (showNewCustomerForm) {
+        const { firstName, lastName, companyName, street, houseNumber, postalCode, city, phone, email } = newCustomerForm;
+        if (!firstName || !lastName || !street || !houseNumber || !postalCode || !city) {
+          showMessage("Vul alle velden in voor de nieuwe klant (voornaam, achternaam, straat, huisnummer, postcode, plaats).", false);
+          return;
+        }
+        const newCustomerFullAddress = `${street} ${houseNumber}, ${postalCode} ${city}`;
+        const newCustomerRef = await addDoc(collection(db, `artifacts/${__app_id}/users/${userId}/customers`), { firstName, lastName, companyName, address: newCustomerFullAddress, phone, email });
+        finalCustomerId = newCustomerRef.id;
+        customerFirstNameForProject = firstName;
+        customerLastNameForProject = lastName;
+        customerCompanyNameForProject = companyName;
+        customerAddressForProject = newCustomerFullAddress;
+        customerPhoneForProject = phone;
+        customerEmailForProject = email;
+        showMessage("Nieuwe klant succesvol toegevoegd!", true);
+      } else if (!selectedCustomerId) {
+        showMessage("Selecteer een bestaande klant of voeg een nieuwe toe.", false);
+        return;
+      }
+      const fullProjectLocation = `${projectStreet} ${projectHouseNumber}, ${projectPostalCode} ${projectCity}`;
+      const projectData = {
+        ...projectForm,
+        customerId: finalCustomerId,
+        customerFirstName: customerFirstNameForProject,
+        customerLastName: customerLastNameForProject,
+        customerCompanyName: customerCompanyNameForProject,
+        customerAddress: customerAddressForProject,
+        customerPhone: customerPhoneForProject,
+        customerEmail: customerEmailForProject,
+        projectLocation: fullProjectLocation,
+        status: 'Wachtend op start',
+        createdAt: new Date().toISOString(),
+      };
+      delete projectData.projectStreet;
+      delete projectData.projectHouseNumber;
+      delete projectData.projectPostalCode;
+      delete projectData.projectCity;
+      await addDoc(collection(db, `artifacts/${__app_id}/users/${userId}/projects`), projectData);
+      showMessage("Project succesvol aangemaakt!", true);
+      onNavigate('projects');
+    } catch (error) {
+      console.error("Fout bij aanmaken project:", error);
+      showMessage(`Fout bij aanmaken project: ${error.message}`, false);
+    }
+  };
+
+  return (
+    <div className="p-6 bg-gray-50 min-h-screen rounded-lg shadow-inner">
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">Offerte-opname / Nieuw Project</h2>
+      <form onSubmit={saveProject} className="bg-white p-6 rounded-xl shadow-lg space-y-6">
+        <div>
+          <h3 className="text-2xl font-semibold text-gray-700 mb-4">Klantgegevens</h3>
+          <label htmlFor="customerSelect" className="block text-sm font-medium text-gray-700 mb-1">Selecteer Klant</label>
+          <select
+            id="customerSelect"
+            value={selectedCustomerId}
+            onChange={handleCustomerSelectionChange}
+            className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
+          >
+            <option value="">-- Selecteer een klant --</option>
+            {customers.map(customer => (
+              <option key={customer.id} value={customer.id}>
+                {customer.firstName} {customer.lastName}{customer.companyName ? ` (${customer.companyName})` : ''}
+              </option>
+            ))}
+            <option value="new">-- Nieuwe klant aanmaken --</option>
+          </select>
+        </div>
+        {showNewCustomerForm && (
+          <div className="bg-gray-100 p-4 rounded-md border border-gray-200">
+            <h4 className="text-xl font-semibold text-gray-700 mb-3">Nieuwe Klant Details</h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="newCustomerFirstName" className="block text-sm font-medium text-gray-700">Voornaam</label>
+                <input type="text" id="newCustomerFirstName" name="firstName" value={newCustomerForm.firstName} onChange={handleNewCustomerFormChange} required={showNewCustomerForm} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label htmlFor="newCustomerLastName" className="block text-sm font-medium text-gray-700">Achternaam</label>
+                <input type="text" id="newCustomerLastName" name="lastName" value={newCustomerForm.lastName} onChange={handleNewCustomerFormChange} required={showNewCustomerForm} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label htmlFor="newCustomerCompanyName" className="block text-sm font-medium text-gray-700">Bedrijfsnaam (optioneel)</label>
+                <input type="text" id="newCustomerCompanyName" name="companyName" value={newCustomerForm.companyName} onChange={handleNewCustomerFormChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label htmlFor="newCustomerStreet" className="block text-sm font-medium text-gray-700">Straat</label>
+                <input type="text" id="newCustomerStreet" name="street" value={newCustomerForm.street} onChange={handleNewCustomerFormChange} required={showNewCustomerForm} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label htmlFor="newCustomerHouseNumber" className="block text-sm font-medium text-gray-700">Huisnummer</label>
+                <input type="text" id="newCustomerHouseNumber" name="houseNumber" value={newCustomerForm.houseNumber} onChange={handleNewCustomerFormChange} required={showNewCustomerForm} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label htmlFor="newCustomerPostalCode" className="block text-sm font-medium text-gray-700">Postcode</label>
+                <input type="text" id="newCustomerPostalCode" name="postalCode" value={newCustomerForm.postalCode} onChange={handleNewCustomerFormChange} required={showNewCustomerForm} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label htmlFor="newCustomerCity" className="block text-sm font-medium text-gray-700">Plaats</label>
+                <input type="text" id="newCustomerCity" name="city" value={newCustomerForm.city} onChange={handleNewCustomerFormChange} required={showNewCustomerForm} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label htmlFor="newCustomerPhone" className="block text-sm font-medium text-gray-700">Telefoonnummer</label>
+                <input type="tel" id="newCustomerPhone" name="phone" value={newCustomerForm.phone} onChange={handleNewCustomerFormChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label htmlFor="newCustomerEmail" className="block text-sm font-medium text-gray-700">E-mailadres</label>
+                <input type="email" id="newCustomerEmail" name="email" value={newCustomerForm.email} onChange={handleNewCustomerFormChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+            </div>
+          </div>
+        )}
+        {!showNewCustomerForm && selectedCustomerId && (
+          <div className="bg-blue-50 p-4 rounded-md border border-blue-200">
+            <h4 className="text-xl font-semibold text-blue-800 mb-3">Geselecteerde Klant Details</h4>
+            <p><span className="font-medium">Naam:</span> {projectForm.customerFirstName} {projectForm.customerLastName}</p>
+            {projectForm.customerCompanyName && <p><span className="font-medium">Bedrijfsnaam:</span> {projectForm.customerCompanyName}</p>}
+            <p><span className="font-medium">Adres:</span> {projectForm.customerAddress}</p>
+            <p><span className="font-medium">Telefoon:</span> {projectForm.customerPhone}</p>
+            <p><span className="font-medium">E-mail:</span> {projectForm.customerEmail}</p>
+          </div>
+        )}
+        <div>
+          <h3 className="text-2xl font-semibold text-gray-700 mb-4">Projectdetails</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label htmlFor="projectName" className="block text-sm font-medium text-gray-700">Projectnaam</label>
+              <input type="text" id="projectName" name="name" value={projectForm.name} onChange={handleProjectFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+            </div>
+            <div>
+              <label htmlFor="projectStreet" className="block text-sm font-medium text-gray-700">Projectlocatie Straat</label>
+              <input type="text" id="projectStreet" name="projectStreet" value={projectForm.projectStreet} onChange={handleProjectFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+            </div>
+            <div>
+              <label htmlFor="projectHouseNumber" className="block text-sm font-medium text-gray-700">Projectlocatie Huisnummer</label>
+              <input type="text" id="projectHouseNumber" name="projectHouseNumber" value={projectForm.houseNumber} onChange={handleProjectFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+            </div>
+            <div>
+              <label htmlFor="projectPostalCode" className="block text-sm font-medium text-gray-700">Projectlocatie Postcode</label>
+              <input type="text" id="projectPostalCode" name="projectPostalCode" value={projectForm.postalCode} onChange={handleProjectFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+            </div>
+            <div>
+              <label htmlFor="projectCity" className="block text-sm font-medium text-gray-700">Projectlocatie Plaats</label>
+              <input type="text" id="projectCity" name="projectCity" value={projectForm.city} onChange={handleProjectFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+            </div>
+            <div>
+              <label htmlFor="desiredStartDate" className="block text-sm font-medium text-gray-700">Gewenste Startdatum</label>
+              <input type="date" id="desiredStartDate" name="desiredStartDate" value={projectForm.desiredStartDate} onChange={handleProjectFormChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+            </div>
+            <div>
+              <label htmlFor="desiredEndDate" className="block text-sm font-medium text-gray-700">Gewenste Opleverdatum</label>
+              <input type="date" id="desiredEndDate" name="desiredEndDate" value={projectForm.desiredEndDate} onChange={handleProjectFormChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+            </div>
+            <div>
+              <label htmlFor="quoteStatus" className="block text-sm font-medium text-gray-700">Offertestatus</label>
+              <select id="quoteStatus" name="quoteStatus" value={projectForm.quoteStatus} onChange={handleProjectFormChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+                <option value="Concept">Concept</option>
+                <option value="Verstuurd">Verstuurd</option>
+                <option value="Geaccepteerd">Geaccepteerd</option>
+                <option value="Geweigerd">Geweigerd</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        
+        <div className="bg-white p-6 rounded-xl shadow-lg space-y-6">
+          <h3 className="text-2xl font-semibold text-gray-700 mb-4">Offerte Details</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="wallsPlastering" className="block text-sm font-medium text-gray-700">Wanden pleisterwerk (M2)</label>
+                <input type="number" id="wallsPlastering" name="wallsPlastering" value={projectForm.wallsPlastering} onChange={handleProjectFormChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label htmlFor="ceilingsPlastering" className="block text-sm font-medium text-gray-700">Plafond pleisterwerk (M2)</label>
+                <input type="number" id="ceilingsPlastering" name="ceilingsPlastering" value={projectForm.ceilingsPlastering} onChange={handleProjectFormChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label htmlFor="jambs" className="block text-sm font-medium text-gray-700">Dagkanten (M)</label>
+                <input type="number" id="jambs" name="jambs" value={projectForm.jambs} onChange={handleProjectFormChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label htmlFor="cornerGuards" className="block text-sm font-medium text-gray-700">Hoekbeschermers (M)</label>
+                <input type="number" id="cornerGuards" name="cornerGuards" value={projectForm.cornerGuards} onChange={handleProjectFormChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label htmlFor="stucstops" className="block text-sm font-medium text-gray-700">Stucstops (M)</label>
+                <input type="number" id="stucstops" name="stucstops" value={projectForm.stucstops} onChange={handleProjectFormChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div className="md:col-span-2">
+                <label htmlFor="bathroomCementBase" className="block text-sm font-medium text-gray-700">Badkamer uitvlakken cementbasis (tegelzetter)</label>
+                <input type="text" id="bathroomCementBase" name="bathroomCementBase" value={projectForm.bathroomCementBase} onChange={handleProjectFormChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div className="md:col-span-2">
+                <label htmlFor="otherWork" className="block text-sm font-medium text-gray-700">Overige werkzaamheden</label>
+                <textarea id="otherWork" name="otherWork" value={projectForm.otherWork} onChange={handleProjectFormChange} rows="3" className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"></textarea>
+              </div>
+          </div>
+        </div>
+
+        <button
+          type="submit"
+          className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-md shadow-lg transition duration-300 ease-in-out transform hover:scale-105 text-lg"
+        >
+          Project Opslaan
+        </button>
+      </form>
+    </div>
+  );
+};
+
+const ProjectsPage = ({ db, userId, onNavigate, showMessage }) => {
+  const [projects, setProjects] = useState([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  useEffect(() => {
+    if (!db || !userId) return;
+    const projectsColRef = collection(db, `artifacts/${__app_id}/users/${userId}/projects`);
+    const q = query(projectsColRef);
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const projectsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setProjects(projectsData);
+    }, (error) => {
+      console.error("Fout bij het ophalen van projecten:", error);
+      showMessage("Fout bij het laden van projecten.", false);
+    });
+    return () => unsubscribe();
+  }, [db, userId, showMessage]);
+
+  const getStatusColor = (status) => {
+    switch (status) {
+      case 'Bezig': return 'bg-yellow-100 text-yellow-800';
+      case 'Gereed': return 'bg-green-100 text-green-800';
+      case 'Wachtend op start': return 'bg-blue-100 text-blue-800';
+      case 'Concept': return 'bg-gray-100 text-gray-800';
+      case 'Verstuurd': return 'bg-indigo-100 text-indigo-800';
+      case 'Geaccepteerd': return 'bg-teal-100 text-teal-800';
+      case 'Geweigerd': return 'bg-red-100 text-red-800';
+      default: return 'bg-gray-100 text-gray-800';
+    }
+  };
+
+  const filteredProjects = projects.filter(project => {
+    const lowerCaseQuery = searchQuery.toLowerCase();
+    return (
+      project.name.toLowerCase().includes(lowerCaseQuery) ||
+      (project.customerFirstName && project.customerFirstName.toLowerCase().includes(lowerCaseQuery)) ||
+      (project.customerLastName && project.customerLastName.toLowerCase().includes(lowerCaseQuery)) ||
+      (project.customerCompanyName && project.customerCompanyName.toLowerCase().includes(lowerCaseQuery))
+    );
+  });
+
+  return (
+    <div className="p-6 bg-gray-50 min-h-screen rounded-lg shadow-inner">
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">Projecten Overzicht</h2>
+      <div className="mb-8 flex flex-col sm:flex-row justify-between items-center gap-4">
+        <input
+          type="text"
+          placeholder="Zoek op project-, klant- of bedrijfsnaam..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="w-full sm:w-1/2 px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+        />
+        <div className="flex gap-4">
+          <button
+            onClick={() => onNavigate('quoteForm')}
+            className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-md shadow-lg transition duration-300 ease-in-out transform hover:scale-105 text-lg"
+          >
+            Nieuw Project
+          </button>
+          <button
+            onClick={() => onNavigate('quoteForm')}
+            className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 px-6 rounded-md shadow-lg transition duration-300 ease-in-out transform hover:scale-105 text-lg"
+          >
+            Offerte Opname
+          </button>
+        </div>
+      </div>
+      {filteredProjects.length === 0 ? (
+        <p className="text-gray-600 text-center text-lg mt-10">Geen projecten gevonden die overeenkomen met je zoekopdracht.</p>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          {filteredProjects.map((project) => (
+            <div
+              key={project.id}
+              className="bg-white p-6 rounded-xl shadow-lg hover:shadow-xl transition-shadow duration-300 cursor-pointer flex flex-col justify-between"
+              onClick={() => onNavigate('projectDetail', { projectId: project.id })}
+            >
+              <div>
+                <h3 className="text-xl font-semibold text-gray-800 mb-2">{project.name}</h3>
+                <p className="text-gray-600 mb-1"><span className="font-medium">Klant:</span> {project.customerFirstName} {project.customerLastName}{project.customerCompanyName ? ` (${project.customerCompanyName})` : ''}</p>
+                <p className="text-600 mb-3"><span className="font-medium">Locatie:</span> {project.projectLocation}</p>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className={`px-3 py-1 rounded-full text-sm font-semibold ${getStatusColor(project.status)}`}>
+                  {project.status}
+                </span>
+                <button
+                  onClick={(e) => { e.stopPropagation(); onNavigate('projectDetail', { projectId: project.id }); }}
+                  className="text-blue-600 hover:text-blue-800 font-medium text-sm"
+                >
+                  Bekijk Details
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ProjectDetailPage = ({ db, userId, projectId, onNavigate, showMessage }) => {
+  const [project, setProject] = useState(null);
+  const [hours, setHours] = useState([]);
+  const [materialsUsed, setMaterialsUsed] = useState([]);
+  const [timerRunning, setTimerRunning] = useState(false);
+  const [timerStartTime, setTimerStartTime] = useState(null);
+  const [manualHourForm, setManualHourForm] = useState({ date: '', startTime: '', endTime: '', description: '', employeeId: userId });
+  const [materialUsageForm, setMaterialUsageForm] = useState({ materialId: '', quantity: '' });
+  const [allMaterials, setAllMaterials] = useState([]);
+  const [employees, setEmployees] = useState([{ id: userId, name: 'Huidige Gebruiker' }]);
+  const [generatedSummary, setGeneratedSummary] = useState('');
+  const [generatingSummary, setGeneratingSummary] = useState(false);
+  const [showSummaryModal, setShowSummaryModal] = useState(false);
+  const { isJSPDFReady } = useAppContext();
+  const hoursSectionRef = useRef(null);
+  const materialsSectionRef = useRef(null);
+
+  useEffect(() => {
+    if (!db || !userId || !projectId) {
+      showMessage("Geen project geselecteerd of database niet beschikbaar.", false);
+      return;
+    }
+    const projectRef = doc(db, `artifacts/${__app_id}/users/${userId}/projects`, projectId);
+    const unsubscribeProject = onSnapshot(projectRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setProject({ id: docSnap.id, ...docSnap.data() });
+      } else {
+        console.log("Project niet gevonden!");
+        showMessage("Project niet gevonden.", false);
+        onNavigate('projects');
+      }
+    }, (error) => {
+      console.error("Fout bij het ophalen van projectdetails:", error);
+      showMessage("Fout bij het laden van projectdetails.", false);
+    });
+    const hoursColRef = collection(db, `artifacts/${__app_id}/users/${userId}/projects/${projectId}/hours`);
+    const qHours = query(hoursColRef);
+    const unsubscribeHours = onSnapshot(qHours, (snapshot) => {
+      const hoursData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setHours(hoursData);
+    }, (error) => {
+      console.error("Fout bij het ophalen van uren:", error);
+      showMessage("Fout bij het laden van uren.", false);
+    });
+    const materialsUsedColRef = collection(db, `artifacts/${__app_id}/users/${userId}/projects/${projectId}/materialsUsed`);
+    const qMaterialsUsed = query(materialsUsedColRef);
+    const unsubscribeMaterialsUsed = onSnapshot(qMaterialsUsed, (snapshot) => {
+      const materialsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setMaterialsUsed(materialsData);
+    }, (error) => {
+      console.error("Fout bij het ophalen van gebruikte materialen:", error);
+      showMessage("Fout bij het laden van gebruikte materialen.", false);
+    });
+    const allMaterialsColRef = collection(db, `artifacts/${__app_id}/users/${userId}/materials`);
+    const qAllMaterials = query(allMaterialsColRef);
+    const unsubscribeAllMaterials = onSnapshot(qAllMaterials, (snapshot) => {
+      const materialsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setAllMaterials(materialsData);
+    }, (error) => {
+      console.error("Fout bij het ophalen van alle materialen:", error);
+      showMessage("Fout bij het laden van alle materialen.", false);
+    });
+    return () => {
+      unsubscribeProject();
+      unsubscribeHours();
+      unsubscribeMaterialsUsed();
+      unsubscribeAllMaterials();
+    };
+  }, [db, userId, projectId, onNavigate, showMessage]);
+
+  const totalHoursPerEmployee = hours.reduce((acc, hour) => {
+    const employeeName = employees.find(emp => emp.id === hour.employeeId)?.name || `Onbekende Medewerker (${hour.employeeId})`;
+    acc[employeeName] = (acc[employeeName] || 0) + hour.duration;
+    return acc;
+  }, {});
+
+  const startTimer = async () => {
+    if (!db || !userId || !projectId) {
+      showMessage("Kan timer niet starten: Geen databaseverbinding of projectgegevens.", false);
+      return;
+    }
+    const now = new Date();
+    setTimerStartTime(now.toISOString());
+    setTimerRunning(true);
+    showMessage("Timer gestart!", true);
+  };
+
+  const stopTimer = async () => {
+    if (!db || !userId || !projectId || !timerStartTime) {
+      showMessage("Kan timer niet stoppen: Timer niet gestart.", false);
+      return;
+    }
+    const now = new Date();
+    const start = new Date(timerStartTime);
+    const durationMs = now.getTime() - start.getTime();
+    const durationHours = durationMs / (1000 * 60 * 60);
+    try {
+      await addDoc(collection(db, `artifacts/${__app_id}/users/${userId}/projects/${projectId}/hours`), {
+        date: now.toISOString().split('T')[0],
+        startTime: timerStartTime,
+        endTime: now.toISOString(),
+        duration: durationHours,
+        description: 'Automatische timer registratie',
+        employeeId: userId,
+        employeeName: 'Huidige Gebruiker',
+        timestamp: new Date().toISOString()
+      });
+      showMessage("Uren succesvol geregistreerd via timer!", true);
+    } catch (error) {
+      console.error("Fout bij opslaan timer uren:", error);
+      showMessage(`Fout bij opslaan timer uren: ${error.message}`, false);
+    } finally {
+      setTimerRunning(false);
+      setTimerStartTime(null);
+    }
+  };
+
+  const handleManualHourFormChange = (e) => {
+    const { name, value } = e.target;
+    setManualHourForm(prev => ({ ...prev, [name]: value }));
+  };
+
+  const addManualHours = async (e) => {
+    e.preventDefault();
+    if (!db || !userId) {
+      showMessage("Geen databaseverbinding of projectgegevens beschikbaar.", false);
+      return;
+    }
+    const { date, startTime, endTime, description, employeeId } = manualHourForm;
+    if (!date || !startTime || !endTime || !description || !employeeId) {
+      showMessage("Vul alle velden in voor handmatige urenregistratie.", false);
+      return;
+    }
+    const startDateTime = new Date(`${date}T${startTime}`);
+    const endDateTime = new Date(`${date}T${endTime}`);
+    if (endDateTime <= startDateTime) {
+      showMessage("Eindtijd moet na starttijd zijn.", false);
+      return;
+    }
+    const durationMs = endDateTime.getTime() - startDateTime.getTime();
+    const durationHours = durationMs / (1000 * 60 * 60);
+    try {
+      await addDoc(collection(db, `artifacts/${__app_id}/users/${userId}/projects/${projectId}/hours`), {
+        date: date,
+        startTime: startDateTime.toISOString(),
+        endTime: endDateTime.toISOString(),
+        duration: durationHours,
+        description: description,
+        employeeId: employeeId,
+        employeeName: employees.find(emp => emp.id === employeeId)?.name || 'Onbekend',
+        timestamp: new Date().toISOString()
+      });
+      showMessage("Handmatige uren succesvol toegevoegd!", true);
+      setManualHourForm({ date: '', startTime: '', endTime: '', description: '', employeeId: userId });
+    } catch (error) {
+      console.error("Fout bij toevoegen handmatige uren:", error);
+      showMessage(`Fout bij toevoegen handmatige uren: ${error.message}`, false);
+    }
+  };
+
+  const handleMaterialUsageFormChange = (e) => {
+    const { name, value } = e.target;
+    setMaterialUsageForm(prev => ({ ...prev, [name]: value }));
+  };
+
+  const addMaterialUsage = async (e) => {
+    e.preventDefault();
+    if (!db || !userId) {
+      showMessage("Geen databaseverbinding of projectgegevens beschikbaar.", false);
+      return;
+    }
+    const { materialId, quantity } = materialUsageForm;
+    if (!materialId || !quantity) {
+      showMessage("Selecteer een materiaal en voer een hoeveelheid in.", false);
+      return;
+    }
+    const selectedMaterial = allMaterials.find(m => m.id === materialId);
+    if (!selectedMaterial) {
+      showMessage("Geselecteerd materiaal niet gevonden.", false);
+      return;
+    }
+    try {
+      await addDoc(collection(db, `artifacts/${__app_id}/users/${userId}/projects/${projectId}/materialsUsed`), {
+        materialId: materialId,
+        materialName: selectedMaterial.name,
+        unit: selectedMaterial.unit,
+        quantity: parseFloat(quantity),
+        pricePerUnit: selectedMaterial.price || 0,
+        timestamp: new Date().toISOString()
+      });
+      showMessage("Materiaalgebruik succesvol toegevoegd!", true);
+      setMaterialUsageForm({ materialId: '', quantity: '' });
+    } catch (error) {
+      console.error("Fout bij toevoegen materiaalgebruik:", error);
+      showMessage(`Fout bij toevoegen materiaalgebruik: ${error.message}`, false);
+    }
+  };
+
+  const generateProjectReport = () => {
+    if (!isJSPDFReady) {
+      showMessage("PDF-generatie is nog niet geladen. Probeer het over een moment opnieuw.", false);
+      return;
+    }
+    if (!project) {
+      showMessage("Geen projectgegevens om een rapport te genereren.", false);
+      return;
+    }
+    const doc = new jsPDF();
+    doc.setFontSize(22);
+    doc.text(`Projectrapport: ${project.name}`, 14, 20);
+    doc.setFontSize(14);
+    doc.text("Klantgegevens:", 14, 35);
+    doc.setFontSize(12);
+    doc.text(`Naam: ${project.customerFirstName} ${project.customerLastName}`, 14, 45);
+    if (project.customerCompanyName) {
+      doc.text(`Bedrijfsnaam: ${project.customerCompanyName}`, 14, 52);
+      doc.text(`Adres: ${project.customerAddress}`, 14, 59);
+      doc.text(`Telefoon: ${project.customerPhone || 'N/A'}`, 14, 66);
+      doc.text(`E-mail: ${project.customerEmail || 'N/A'}`, 14, 73);
+      doc.text(`Projectlocatie: ${project.projectLocation}`, 14, 80);
+    } else {
+      doc.text(`Adres: ${project.customerAddress}`, 14, 52);
+      doc.text(`Telefoon: ${project.customerPhone || 'N/A'}`, 14, 59);
+      doc.text(`E-mail: ${project.customerEmail || 'N/A'}`, 14, 66);
+      doc.text(`Projectlocatie: ${project.projectLocation}`, 14, 73);
+    }
+    doc.setFontSize(14);
+    doc.text("Projectdetails:", 14, doc.autoTable.previous ? doc.autoTable.previous.finalY + 15 : 95);
+    doc.setFontSize(12);
+    doc.text(`Gewenste Startdatum: ${project.desiredStartDate ? formatDate(project.desiredStartDate) : 'N/A'}`, 14, doc.autoTable.previous ? doc.autoTable.previous.finalY + 25 : 105);
+    doc.text(`Gewenste Opleverdatum: ${project.desiredEndDate ? formatDate(project.desiredEndDate) : 'N/A'}`, 14, doc.autoTable.previous ? doc.autoTable.previous.finalY + 32 : 112);
+    doc.text(`Type Werk: ${project.workType || 'N/A'}`, 14, doc.autoTable.previous ? doc.autoTable.previous.finalY + 39 : 119);
+    doc.text(`Huidige Ondergrond: ${project.currentSurface || 'N/A'}`, 14, doc.autoTable.previous ? doc.autoTable.previous.finalY + 46 : 126);
+    doc.text(`Gewenste Afwerking: ${project.desiredFinish || 'N/A'}`, 14, doc.autoTable.previous ? doc.autoTable.previous.finalY + 53 : 133);
+    doc.text(`Offertestatus: ${project.quoteStatus}`, 14, doc.autoTable.previous ? doc.autoTable.previous.finalY + 60 : 140);
+    doc.text(`Specifieke Wensen/Opmerkingen: ${project.specialNotes || 'N/A'}`, 14, doc.autoTable.previous ? doc.autoTable.previous.finalY + 67 : 147);
+    doc.addPage();
+    doc.setFontSize(16);
+    doc.text("Urenoverzicht", 14, 20);
+    const hoursTableData = hours.map(h => [
+      formatDate(h.date),
+      formatTime(h.startTime),
+      formatTime(h.endTime),
+      h.duration.toFixed(2) + ' uur',
+      h.description,
+      employees.find(emp => emp.id === h.employeeId)?.name || 'Onbekend'
+    ]);
+    doc.autoTable({
+      startY: 30,
+      head: [['Datum', 'Starttijd', 'Eindtijd', 'Duur', 'Omschrijving', 'Medewerker']],
+      body: hoursTableData,
+      theme: 'grid',
+      styles: { fontSize: 10, cellPadding: 2 },
+      headStyles: { fillColor: [23, 105, 170] },
+      margin: { top: 25 }
+    });
+    let finalY = doc.autoTable.previous.finalY + 10;
+    doc.setFontSize(12);
+    for (const employeeName in totalHoursPerEmployee) {
+      doc.text(`Totaal uren ${employeeName}: ${totalHoursPerEmployee[employeeName].toFixed(2)} uur`, 14, finalY);
+      finalY += 7;
+    }
+    const totalProjectHours = Object.values(totalHoursPerEmployee).reduce((sum, current) => sum + current, 0);
+    doc.setFontSize(14);
+    doc.text(`Totaal projecturen: ${totalProjectHours.toFixed(2)} uur`, 14, finalY + 5);
+    doc.addPage();
+    doc.setFontSize(16);
+    doc.text("Gebruikte Materialen", 14, 20);
+    const materialsTableData = materialsUsed.map(m => [
+      m.materialName,
+      m.quantity,
+      m.unit,
+      `€${m.pricePerUnit.toFixed(2)}`,
+      `€${(m.quantity * m.pricePerUnit).toFixed(2)}`
+    ]);
+    doc.autoTable({
+      startY: 30,
+      head: [['Materiaal', 'Hoeveelheid', 'Eenheid', 'Prijs p/e', 'Totaal Kosten']],
+      body: materialsTableData,
+      theme: 'grid',
+      styles: { fontSize: 10, cellPadding: 2 },
+      headStyles: { fillColor: [23, 105, 170] },
+      margin: { top: 25 }
+    });
+    const totalMaterialCost = materialsUsed.reduce((sum, item) => sum + (item.quantity * item.pricePerUnit), 0);
+    doc.setFontSize(14);
+    doc.text(`Totale materiaalkosten: €${totalMaterialCost.toFixed(2)}`, 14, doc.autoTable.previous.finalY + 15);
+    doc.save(`Projectrapport_${project.name.replace(/\s/g, '_')}.pdf`);
+    showMessage("Projectrapport succesvol gegenereerd!", true);
+  };
+
+  const scrollToHours = () => {
+    hoursSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const scrollToMaterials = () => {
+    materialsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const generateProjectSummary = async () => {
+    if (!project) {
+      showMessage("Geen projectgegevens om een samenvatting te genereren.", false);
+      return;
+    }
+    setGeneratingSummary(true);
+    setShowSummaryModal(true);
+    setGeneratedSummary("Samenvatting genereren...");
+    const projectDetails = `Projectnaam: ${project.name}
+Klant: ${project.customerFirstName} ${project.customerLastName} ${project.customerCompanyName ? `(${project.customerCompanyName})` : ''} (${project.customerAddress})
+Projectlocatie: ${project.projectLocation}
+Status: ${project.status}
+Type Werk: ${project.workType || 'N/A'}
+Geschatte Oppervlaktes: ${project.estimatedAreas || 'N/A'}
+Huidige Ondergrond: ${project.currentSurface || 'N/A'}
+Gewenste Afwerking: ${project.desiredFinish || 'N/A'}
+Specifieke Wensen: ${project.specialNotes || 'N/A'}`;
+    const hoursDetails = Object.entries(totalHoursPerEmployee)
+      .map(([employeeName, totalHours]) => `${employeeName}: ${totalHours.toFixed(2)} uur`)
+      .join('\n');
+    const materialsDetails = materialsUsed
+      .map(m => `${m.materialName}: ${m.quantity} ${m.unit}`)
+      .join('\n');
+    const prompt = `Genereer een beknopte, professionele projectsamenvatting voor een stukadoorsbedrijf. De samenvatting moet de belangrijkste projectdetails, gewerkte uren en gebruikte materialen bevatten.
+Projectdetails:
+${projectDetails}
+Gewerkte Uren (per medewerker):
+${hoursDetails || 'Nog geen uren geregistreerd.'}
+Gebruikte Materialen:
+${materialsDetails || 'Nog geen materialen geregistreerd.'}
+Begin de samenvatting met een korte introductie en sluit af met een conclusie over de voortgang of status.`;
+    try {
+      let chatHistory = [];
+      chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+      const payload = { contents: chatHistory };
+      const apiKey = "";
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const result = await response.json();
+      if (result.candidates && result.candidates.length > 0 &&
+        result.candidates[0].content && result.candidates[0].content.parts &&
+        result.candidates[0].content.parts.length > 0) {
+        const text = result.candidates[0].content.parts[0].text;
+        setGeneratedSummary(text);
+      } else {
+        setGeneratedSummary("Kon geen samenvatting genereren. Probeer het opnieuw.");
+      }
+    } catch (error) {
+      console.error("Fout bij genereren projectsamenvatting:", error);
+      setGeneratedSummary(`Fout bij genereren projectsamenvatting: ${error.message}`);
+    } finally {
+      setGeneratingSummary(false);
+    }
+  };
+
+
+  if (!project) {
+    return (
+      <div className="p-6 bg-gray-50 min-h-screen flex items-center justify-center">
+        <p className="text-gray-600 text-xl">Projectgegevens laden...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-6 bg-gray-50 min-h-screen rounded-lg shadow-inner">
+      <button onClick={() => onNavigate('projects')} className="mb-6 bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-md shadow-md transition duration-300 ease-in-out">
+        &larr; Terug naar Projecten
+      </button>
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">{project.name}</h2>
+      <div className="mb-8 flex flex-wrap gap-4">
+        {!timerRunning ? (
+          <button
+            onClick={startTimer}
+            className="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-md shadow-md transition duration-300 ease-in-out transform hover:scale-105 text-lg"
+          >
+            Start Timer
+          </button>
+        ) : (
+          <button
+            onClick={stopTimer}
+            className="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-md shadow-lg transition duration-300 ease-in-out transform hover:scale-105 text-lg"
+          >
+            Stop Timer
+          </button>
+        )}
+        <button
+          onClick={scrollToHours}
+          className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-md shadow-lg transition duration-300 ease-in-out transform hover:scale-105 text-lg"
+        >
+          Uren Registreren
+        </button>
+        <button
+          onClick={scrollToMaterials}
+          className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-md shadow-lg transition duration-300 ease-in-out transform hover:scale-105 text-lg"
+        >
+          Materialen Registreren
+        </button>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+        <div className="bg-white p-6 rounded-xl shadow-lg">
+          <h3 className="text-2xl font-semibold text-gray-700 mb-4">Klant- en Projectgegevens</h3>
+          <p className="mb-2"><span className="font-medium">Naam:</span> {project.customerFirstName} {project.customerLastName}</p>
+          {project.customerCompanyName && <p><span className="font-medium">Bedrijfsnaam:</span> {project.customerCompanyName}</p>}
+          <p className="mb-2"><span className="font-medium">Adres:</span> {project.customerAddress}</p>
+          <p className="mb-2"><span className="font-medium">Telefoon:</span> {project.customerPhone}</p>
+          <p className="mb-2"><span className="font-medium">E-mail:</span> {project.customerEmail}</p>
+          <p className="mb-2"><span className="font-medium">Projectlocatie:</span> {project.projectLocation}</p>
+          <p className="mb-2"><span className="font-medium">Gewenste Start:</span> {project.desiredStartDate ? formatDate(project.desiredStartDate) : 'N/A'}</p>
+          <p className="mb-2"><span className="font-medium">Gewenste Oplevering:</span> {project.desiredEndDate ? formatDate(project.desiredEndDate) : 'N/A'}</p>
+          <p className="mb-2"><span className="font-medium">Status:</span> <span className={`px-2 py-1 rounded-full text-sm font-semibold bg-blue-100 text-blue-800`}>{project.status}</span></p>
+        </div>
+        <div className="bg-white p-6 rounded-xl shadow-lg">
+          <h3 className="text-2xl font-semibold text-gray-700 mb-4">Werkdetails</h3>
+          <p className="mb-2"><span className="font-medium">Type Werk:</span> {project.workType || 'N/A'}</p>
+          <p className="mb-2"><span className="font-medium">Geschatte Oppervlaktes:</span> {project.estimatedAreas || 'N/A'}</p>
+          <p className="mb-2"><span className="font-medium">Huidige Ondergrond:</span> {project.currentSurface || 'N/A'}</p>
+          <p className="mb-2"><span className="font-medium">Gewenste Afwerking:</span> {project.desiredFinish || 'N/A'}</p>
+          <p className="mb-2"><span className="font-medium">Specifieke Wensen:</span> {project.specialNotes || 'N/A'}</p>
+          <p className="mb-2"><span className="font-medium">Geschatte Materialen:</span> {project.estimatedMaterials || 'N/A'}</p>
+          <p className="mb-2"><span className="font-medium">Geschatte Manuren Offerte:</span> {project.estimatedManHours || 'N/A'} uur</p>
+          {project.photos && (
+            <div className="mt-4">
+              <span className="font-medium block mb-2">Foto's:</span>
+              <img src="https://placehold.co/400x200/cccccc/333333?text=Geen+Afbeelding" alt="Project Foto" className="max-w-full h-auto rounded-md shadow-sm" onError={(e) => { e.target.onerror = null; e.target.src="https://placehold.co/400x200/cccccc/333333?text=Geen+Afbeelding"; }} />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Registratie Sectie */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+        {/* Uren Registratie */}
+        <div ref={hoursSectionRef} className="bg-white p-6 rounded-xl shadow-lg">
+          <h3 className="2xl font-semibold text-gray-700 mb-4">Uren Registratie</h3>
+          <form onSubmit={addManualHours} className="space-y-4">
+            <div>
+              <label htmlFor="hourDate" className="block text-sm font-medium text-gray-700">Datum</label>
+              <input type="date" id="hourDate" name="date" value={manualHourForm.date} onChange={handleManualHourFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="hourStartTime" className="block text-sm font-medium text-gray-700">Starttijd</label>
+                <input type="time" id="hourStartTime" name="startTime" value={manualHourForm.startTime} onChange={handleManualHourFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+              <div>
+                <label htmlFor="hourEndTime" className="block text-sm font-medium text-gray-700">Eindtijd</label>
+                <input type="time" id="hourEndTime" name="endTime" value={manualHourForm.endTime} onChange={handleManualHourFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+              </div>
+            </div>
+            <div>
+              <label htmlFor="hourDescription" className="block text-sm font-medium text-gray-700">Omschrijving</label>
+              <textarea id="hourDescription" name="description" value={manualHourForm.description} onChange={handleManualHourFormChange} rows="2" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"></textarea>
+            </div>
+            <div>
+              <label htmlFor="employeeSelect" className="block text-sm font-medium text-gray-700">Medewerker</label>
+              <select id="employeeSelect" name="employeeId" value={manualHourForm.employeeId} onChange={handleManualHourFormChange} className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+                {employees.map(emp => (
+                  <option key={emp.id} value={emp.id}>{emp.name}</option>
+                ))}
+              </select>
+            </div>
+            <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300 ease-in-out transform hover:scale-105">
+              Uren Toevoegen
+            </button>
+          </form>
+
+          <h4 className="text-xl font-semibold text-gray-700 mt-8 mb-4">Geregistreerde Uren</h4>
+          {hours.length === 0 ? (
+            <p className="text-gray-600">Nog geen uren geregistreerd voor dit project.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Datum</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Start</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Einde</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Duur (uur)</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Medewerker</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Omschrijving</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {hours.map((h) => (
+                    <tr key={h.id}>
+                      <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-900">{formatDate(h.date)}</td>
+                      <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-500">{formatTime(h.startTime)}</td>
+                      <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-500">{h.endTime ? formatTime(h.endTime) : 'N/A'}</td>
+                      <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-500">{h.duration ? h.duration.toFixed(2) : '0.00'}</td>
+                      <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-500">{employees.find(emp => emp.id === h.employeeId)?.name || 'Onbekend'}</td>
+                      <td className="px-3 py-2 text-sm text-gray-500">{h.description}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Materialen Registratie */}
+        <div ref={materialsSectionRef} className="bg-white p-6 rounded-xl shadow-lg">
+          <h3 className="text-2xl font-semibold text-gray-700 mb-4">Materialen Registratie</h3>
+          <form onSubmit={addMaterialUsage} className="space-y-4">
+            <div>
+              <label htmlFor="materialSelect" className="block text-sm font-medium text-gray-700">Materiaal</label>
+              <select id="materialSelect" name="materialId" value={materialUsageForm.materialId} onChange={handleMaterialUsageFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+                <option value="">-- Selecteer Materiaal --</option>
+                {allMaterials.map(mat => (
+                  <option key={mat.id} value={mat.id}>{mat.name} ({mat.unit})</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="materialQuantity" className="block text-sm font-medium text-gray-700">Hoeveelheid</label>
+              <input type="number" id="materialQuantity" name="quantity" value={materialUsageForm.quantity} onChange={handleMaterialUsageFormChange} step="0.01" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+            </div>
+            <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300 ease-in-out transform hover:scale-105">
+              Materiaal Toevoegen
+            </button>
+          </form>
+
+          <h4 className="text-xl font-semibold text-gray-700 mt-8 mb-4">Gebruikte Materialen</h4>
+          {materialsUsed.length === 0 ? (
+            <p className="text-gray-600">Nog geen materialen geregistreerd voor dit project.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Materiaal</th>
+                    <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Hoeveelheid</th>
+                    <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Eenheid</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {materialsUsed.map((m) => (
+                    <tr key={m.id}>
+                      <td className="px-3 py-2 whitespace-nowrap text-sm font-medium text-gray-900">{m.materialName}</td>
+                      <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-500">{m.quantity}</td>
+                      <td className="px-3 py-2 whitespace-nowrap text-sm text-gray-500">{m.unit}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Project Overzicht (Dynamisch) */}
+      <div className="bg-white p-6 rounded-xl shadow-lg mt-8">
+        <h3 className="text-2xl font-semibold text-gray-700 mb-4">Project Overzicht</h3>
+        {Object.keys(totalHoursPerEmployee).length === 0 ? (
+          <p className="text-gray-600">Nog geen uren geregistreerd voor dit project.</p>
+        ) : (
+          <ul className="list-disc list-inside space-y-2">
+            {Object.entries(totalHoursPerEmployee).map(([employeeName, totalHours]) => (
+              <li key={employeeName} className="text-gray-700 text-lg">
+                <span className="font-semibold">{employeeName}:</span> {totalHours.toFixed(2)} uur
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Navigatieknoppen (PDF, Samenvatting) onderaan */}
+      <div className="mt-8 flex flex-wrap gap-4 justify-end">
+        <button
+          onClick={generateProjectReport}
+          className="bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-6 rounded-md shadow-md transition duration-300 ease-in-out transform hover:scale-105 text-lg"
+        >
+          Genereer Projectrapport (PDF)
+        </button>
+        <button
+          onClick={generateProjectSummary}
+          disabled={generatingSummary}
+          className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-md shadow-md transition duration-300 ease-in-out transform hover:scale-105 text-lg flex items-center justify-center"
+        >
+          {generatingSummary ? (
+            <>
+              <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+              Genereren...
+            </>
+          ) : (
+            'Genereer Project Samenvatting ✨'
+          )}
+        </button>
+      </div>
+
+      {/* Project Summary Modal */}
+      {showSummaryModal && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-4">
+          <div className="bg-white p-8 rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <h3 className="text-2xl font-bold text-gray-800 mb-4">Project Samenvatting</h3>
+            {generatingSummary ? (
+              <div className="flex items-center justify-center py-10">
+                <svg className="animate-spin h-8 w-8 text-blue-500 mr-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span className="text-lg text-gray-700">Samenvatting genereren...</span>
+              </div>
+            ) : (
+              <p className="text-gray-700 whitespace-pre-wrap leading-relaxed">{generatedSummary}</p>
+            )}
+            <div className="mt-6 text-right">
+              <button
+                onClick={() => setShowSummaryModal(false)}
+                className="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-md transition duration-300 ease-in-out"
+              >
+                Sluiten
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const WeekPlanningPage = ({ db, userId, showMessage }) => {
+  const [events, setEvents] = useState([]);
+  const [projects, setProjects] = useState([]);
+  const [newEventForm, setNewEventForm] = useState({
+    projectId: '',
+    date: '',
+    startTime: '',
+    endTime: '',
+    description: '',
+    location: '',
+  });
+  const [googleEvents, setGoogleEvents] = useState([]);
+  const [fetchingGoogleEvents, setFetchingGoogleEvents] = useState(false);
+  const { googleCalendarIcsUrl } = useAppContext();
+
+  const parseIcsContent = (icsText) => {
+    const parsedEvents = [];
+    const lines = icsText.split('\n');
+    let currentEvent = null;
+    lines.forEach(line => {
+      line = line.trim();
+      if (line === 'BEGIN:VEVENT') {
+        currentEvent = {};
+      } else if (line === 'END:VEVENT') {
+        if (currentEvent && currentEvent.summary && currentEvent.dtstart && currentEvent.dtend) {
+          try {
+            const startDate = new Date(currentEvent.dtstart);
+            const endDate = new Date(currentEvent.dtend);
+            if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+              console.warn("Skipping ICS event due to invalid date/time:", currentEvent);
+              currentEvent = null;
+              return;
+            }
+            parsedEvents.push({
+              id: currentEvent.uid || `google-event-${Math.random()}`,
+              description: currentEvent.summary,
+              date: startDate.toISOString().split('T')[0],
+              startTime: startDate.toTimeString().slice(0, 5),
+              endTime: endDate.toTimeString().slice(0, 5),
+              location: currentEvent.location || '',
+              isGoogleEvent: true
+            });
+          } catch (e) {
+            console.error("Error processing ICS event dates:", e, currentEvent);
+          }
+        } else {
+          console.warn("Skipping incomplete ICS event:", currentEvent);
+        }
+        currentEvent = null;
+      } else if (currentEvent) {
+        const parts = line.split(':');
+        if (parts.length > 1) {
+          const key = parts[0].split(';')[0];
+          const value = parts.slice(1).join(':');
+          if (key === 'SUMMARY') {
+            currentEvent.summary = value;
+          } else if (key === 'DTSTART') {
+            currentEvent.dtstart = value;
+          } else if (key === 'DTEND') {
+            currentEvent.dtend = value;
+          } else if (key === 'LOCATION') {
+            currentEvent.location = value;
+          } else if (key === 'UID') {
+            currentEvent.uid = value;
+          }
+        }
+      }
+    });
+    return parsedEvents;
+  };
+
+  useEffect(() => {
+    const fetchGoogleCalendarEvents = async () => {
+      if (!googleCalendarIcsUrl) {
+        setGoogleEvents([]);
+        return;
+      }
+      setFetchingGoogleEvents(true);
+      try {
+        const response = await fetch(googleCalendarIcsUrl);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const icsText = await response.text();
+        const parsed = parseIcsContent(icsText);
+        setGoogleEvents(parsed);
+        showMessage("Google Agenda evenementen succesvol geladen.", true);
+      } catch (error) {
+        console.error("Fout bij het ophalen van Google Agenda evenementen:", error);
+        showMessage(`Fout bij het laden van Google Agenda evenementen: ${error.message}`, false);
+        setGoogleEvents([]);
+      } finally {
+        setFetchingGoogleEvents(false);
+      }
+    };
+    fetchGoogleCalendarEvents();
+  }, [googleCalendarIcsUrl, showMessage]);
+
+  useEffect(() => {
+    if (!db || !userId) return;
+    const eventsColRef = collection(db, `artifacts/${__app_id}/users/${userId}/planningEvents`);
+    const qEvents = query(eventsColRef);
+    const unsubscribeEvents = onSnapshot(qEvents, (snapshot) => {
+      const eventsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setEvents(eventsData);
+    }, (error) => {
+      console.error("Fout bij het ophalen van planningsevenementen:", error);
+      showMessage("Fout bij het laden van planningsevenementen.", false);
+    });
+    const projectsColRef = collection(db, `artifacts/${__app_id}/users/${userId}/projects`);
+    const qProjects = query(projectsColRef);
+    const unsubscribeProjects = onSnapshot(qProjects, (snapshot) => {
+      const projectsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setProjects(projectsData);
+    }, (error) => {
+      console.error("Fout bij het ophalen van projecten voor planning:", error);
+      showMessage("Fout bij het laden van projecten.", false);
+    });
+    return () => {
+      unsubscribeEvents();
+      unsubscribeProjects();
+    };
+  }, [db, userId, showMessage]);
+
+  const handleNewEventFormChange = (e) => {
+    const { name, value } = e.target;
+    setNewEventForm(prev => ({ ...prev, [name]: value }));
+  };
+
+  const addEvent = async (e) => {
+    e.preventDefault();
+    if (!db || !userId) {
+      showMessage("Geen databaseverbinding of gebruikers-ID beschikbaar.", false);
+      return;
+    }
+    const { projectId, date, startTime, endTime, description, location } = newEventForm;
+    if (!projectId || !date || !startTime || !endTime || !description) {
+      showMessage("Vul alle verplichte velden in voor het evenement.", false);
+      return;
+    }
+    const startDateTime = new Date(`${date}T${startTime}`);
+    const endDateTime = new Date(`${date}T${endTime}`);
+    if (endDateTime <= startDateTime) {
+      showMessage("Eindtijd moet na starttijd zijn.", false);
+      return;
+    }
+    const selectedProject = projects.find(p => p.id === projectId);
+    const eventData = {
+      projectId: projectId,
+      projectName: selectedProject ? selectedProject.name : 'Onbekend Project',
+      date: date,
+      startTime: startTime,
+      endTime: endTime,
+      description: description,
+      location: location || selectedProject?.projectLocation || '',
+      timestamp: new Date().toISOString(),
+    };
+    try {
+      await addDoc(collection(db, `artifacts/${__app_id}/users/${userId}/planningEvents`), eventData);
+      showMessage("Evenement succesvol toegevoegd aan planning!", true);
+      setNewEventForm({ projectId: '', date: '', startTime: '', endTime: '', description: '', location: '' });
+    } catch (error) {
+      console.error("Fout bij toevoegen evenement:", error);
+      showMessage(`Fout bij toevoegen evenement: ${error.message}`, false);
+    }
+  };
+
+  const deleteEvent = async (id) => {
+    if (!db || !userId) {
+      showMessage("Geen databaseverbinding of gebruikers-ID beschikbaar.", false);
+      return;
+    }
+    if (window.confirm("Weet u zeker dat u dit evenement wilt verwijderen?")) {
+      try {
+        await deleteDoc(doc(db, `artifacts/${__app_id}/users/${userId}/planningEvents`, id));
+        showMessage("Evenement succesvol verwijderd!", true);
+      } catch (error) {
+        console.error("Fout bij verwijderen evenement:", error);
+        showMessage(`Fout bij verwijderen evenement: ${error.message}`, false);
+      }
+    }
+  };
+
+  const allEvents = [...events, ...googleEvents];
+  const eventsByDay = allEvents.reduce((acc, event) => {
+    const date = event.date;
+    if (!acc[date]) {
+      acc[date] = [];
+    }
+    acc[date].push(event);
+    return acc;
+  }, {});
+
+  const sortedDays = Object.keys(eventsByDay).sort();
+
+  const exportToIcs = () => {
+    if (allEvents.length === 0) {
+      showMessage("Geen evenementen om te exporteren.", false);
+      return;
+    }
+    let icsContent = `BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//Stukadoorsbedrijf App//NONSGML v1.0//EN\n`;
+    allEvents.forEach(event => {
+      const start = new Date(`${event.date}T${event.startTime}`);
+      const end = new Date(`${event.date}T${event.endTime}`);
+      const dtstart = start.toISOString().replace(/[-:]|\.\d{3}/g, '').slice(0, 15);
+      const dtend = end.toISOString().replace(/[-:]|\.\d{3}/g, '').slice(0, 15);
+      const now = new Date().toISOString().replace(/[-:]|\.\d{3}/g, '').slice(0, 15) + 'Z';
+      icsContent += `BEGIN:VEVENT\nUID:${event.id || new Date().getTime() + Math.random()}@stukadoorsbedrijf.app\nDTSTAMP:${now}\nDTSTART:${dtstart}\nDTEND:${dtend}\nSUMMARY:${event.projectName || ''} ${event.description}\nLOCATION:${event.location || 'N/A'}\nEND:VEVENT\n`;
+    });
+    icsContent += `END:VCALENDAR`;
+    const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'weekplanning.ics';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showMessage("Planning succesvol geëxporteerd naar .ics bestand!", true);
+  };
+
+
+  return (
+    <div className="p-6 bg-gray-50 min-h-screen rounded-lg shadow-inner">
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">Weekplanning</h2>
+      <div className="bg-white p-6 rounded-xl shadow-lg mb-8">
+        <h3 className="text-2xl font-semibold text-gray-700 mb-4">Nieuw Evenement Toevoegen</h3>
+        <form onSubmit={addEvent} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label htmlFor="eventProject" className="block text-sm font-medium text-gray-700">Koppel Project</label>
+            <select
+              id="eventProject"
+              name="projectId"
+              value={newEventForm.projectId}
+              onChange={handleNewEventFormChange}
+              className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"
+              required
+            >
+              <option value="">-- Selecteer Project --</option>
+              {projects.map(project => (
+                <option key={project.id} value={project.id}>
+                  {project.name}{project.customerCompanyName ? ` (${project.customerCompanyName})` : ''} ({project.customerFirstName} {project.customerLastName})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="eventDate" className="block text-sm font-medium text-gray-700">Datum</label>
+            <input type="date" id="eventDate" name="date" value={newEventForm.date} onChange={handleNewEventFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+          </div>
+          <div>
+            <label htmlFor="eventStartTime" className="block text-sm font-medium text-gray-700">Starttijd</label>
+            <input type="time" id="eventStartTime" name="startTime" value={newEventForm.startTime} onChange={handleNewEventFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+          </div>
+          <div>
+            <label htmlFor="eventEndTime" className="block text-sm font-medium text-gray-700">Eindtijd</label>
+            <input type="time" id="eventEndTime" name="endTime" value={newEventForm.endTime} onChange={handleNewEventFormChange} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+          </div>
+          <div className="md:col-span-2">
+            <label htmlFor="eventDescription" className="block text-sm font-medium text-gray-700">Omschrijving</label>
+            <textarea id="eventDescription" name="description" value={newEventForm.description} onChange={handleNewEventFormChange} rows="2" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"></textarea>
+          </div>
+          <div className="md:col-span-2">
+            <label htmlFor="eventLocation" className="block text-sm font-medium text-gray-700">Locatie (optioneel, vult projectlocatie in)</label>
+            <input type="text" id="eventLocation" name="location" value={newEventForm.location} onChange={handleNewEventFormChange} placeholder="Specifieke locatie of adres" className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" />
+          </div>
+          <div className="md:col-span-2">
+            <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300 ease-in-out">
+              Evenement Toevoegen
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <div className="bg-white p-6 rounded-xl shadow-lg">
+        <h3 className="text-2xl font-semibold text-gray-700 mb-4">Mijn Weekplanning</h3>
+        <button
+          onClick={exportToIcs}
+          className="mb-4 bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-300 ease-in-out"
+        >
+          Exporteer naar Google Agenda (.ics)
+        </button>
+        {fetchingGoogleEvents && <p className="text-gray-600 mb-2">Google Agenda evenementen laden...</p>}
+        {allEvents.length === 0 && !fetchingGoogleEvents && googleCalendarIcsUrl ? (
+          <p className="text-gray-600">Nog geen evenementen gepland. Controleer de Google Agenda URL in Instellingen.</p>
+        ) : (
+          <div>
+            {sortedDays.map(date => (
+              <div key={date} className="mb-6 border-b border-gray-200 pb-4">
+                <h4 className="text-xl font-semibold text-gray-800 mb-3">{formatDate(date)}</h4>
+                {eventsByDay[date].sort((a, b) => {
+                  const timeA = a.startTime || '00:00';
+                  const timeB = b.startTime || '00:00';
+                  return timeA.localeCompare(timeB);
+                }).map(event => (
+                  <div key={event.id} className={`p-4 rounded-lg shadow-sm mb-3 flex justify-between items-center ${event.isGoogleEvent ? 'bg-blue-50 border-l-4 border-blue-400' : 'bg-gray-50'}`}>
+                    <div>
+                      <p className="text-lg font-medium text-gray-900">
+                        {event.projectName ? `${event.projectName}: ` : ''}{event.description}
+                        {event.isGoogleEvent && <span className="text-xs text-blue-600 ml-2">(Google Agenda)</span>}
+                      </p>
+                      <p className="text-sm text-gray-600">{event.startTime} - {event.endTime}</p>
+                      {event.location && <p className="text-sm text-gray-600">Locatie: {event.location}</p>}
+                    </div>
+                    {!event.isGoogleEvent && ( // Only allow deleting local events
+                      <button
+                        onClick={() => deleteEvent(event.id)}
+                        className="bg-red-500 hover:bg-red-600 text-white font-bold py-1 px-3 rounded-md text-sm transition duration-300 ease-in-out"
+                      >
+                        Verwijderen
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+
+// Main App Component
+function App() {
+  const [db, setDb] = useState(null);
+  const [auth, setAuth] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [currentView, setCurrentView] = useState('projects'); // Default view
+  const [selectedProjectId, setSelectedProjectId] = useState(null);
+  const [message, setMessage] = useState('');
+  const [isSuccessMessage, setIsSuccessMessage] = useState(true);
+  const [isJSPDFReady, setIsJSPDFReady] = useState(false); // New state for jsPDF readiness
+  const [googleCalendarIcsUrl, setGoogleCalendarIcsUrl] = useState(''); // State to pass down Google Calendar URL
+
+  // Initialize Firebase and set up auth listener
+  useEffect(() => {
+    try {
+      // Use a default appId if __app_id is not defined (e.g., when running locally outside Canvas)
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+      // Use a default firebaseConfig if __firebase_config is not defined
+      const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+        // Replace with your actual Firebase config if running locally
+        apiKey: "YOUR_API_KEY",
+        authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+        projectId: "YOUR_PROJECT_ID",
+        storageBucket: "YOUR_PROJECT_ID.appspot.com",
+        messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+        appId: "YOUR_WEB_APP_ID" // Dit is de app ID van je web app in Firebase
+      };
+
+      const app = initializeApp(firebaseConfig);
+      const firestoreDb = getFirestore(app);
+      const firebaseAuth = getAuth(app);
+
+      setDb(firestoreDb);
+      setAuth(firebaseAuth);
+
+      const unsubscribeAuth = onAuthStateChanged(firebaseAuth, async (user) => {
+        if (user) {
+          setUserId(user.uid);
+          // Fetch user-specific settings (like Google Calendar URL) on auth change
+          const settingsRef = doc(firestoreDb, `artifacts/${appId}/users/${user.uid}/settings/general`);
+          const docSnap = await getDoc(settingsRef);
+          if (docSnap.exists()) {
+            setGoogleCalendarIcsUrl(docSnap.data().googleCalendarIcsUrl || '');
+          }
+        } else {
+          // If no user, try to sign in anonymously
+          try {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+              await signInWithCustomToken(firebaseAuth, __initial_auth_token);
+            } else {
+              await signInAnonymously(firebaseAuth);
+            }
+          } catch (error) {
+            console.error("Fout bij anoniem inloggen of met custom token:", error);
+            showMessage("Kon niet inloggen. Probeer het opnieuw.", false);
+          }
+        }
+        setIsAuthReady(true);
+      });
+
+      // Function to load external scripts
+      const loadScript = (src, id) => {
+        return new Promise((resolve, reject) => {
+          if (document.getElementById(id)) {
+            resolve();
+            return;
+          }
+          const script = document.createElement('script');
+          script.src = src;
+          script.id = id;
+          script.onload = resolve;
+          script.onerror = reject;
+          document.body.appendChild(script);
+        });
+      };
+
+      // Load jsPDF and its plugin
+      const loadJSPDFAndDependencies = async () => {
+        try {
+          await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js', 'jspdf-script');
+          await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.14/jspdf.plugin.autotable.min.js', 'jspdf-autotable-script');
+          setIsJSPDFReady(true);
+          console.log("jsPDF and jspdf-autotable loaded successfully.");
+        } catch (error) {
+          console.error("Failed to load jsPDF scripts:", error);
+          showMessage("Fout bij het laden van PDF-generatie scripts.", false);
+        }
+      };
+
+      loadJSPDFAndDependencies();
+
+
+      return () => unsubscribeAuth();
+    } catch (error) {
+      console.error("Fout bij initialiseren Firebase:", error);
+      showMessage("Fout bij initialiseren van de app. Controleer de configuratie.", false);
+    }
+  }, []);
+
+  const handleNavigate = (view, params = {}) => {
+    setCurrentView(view);
+    if (view === 'projectDetail' && params.projectId) {
+      setSelectedProjectId(params.projectId);
+    } else {
+      setSelectedProjectId(null);
+    }
+  };
+
+  const handleLogout = async () => {
+    if (auth) {
+      try {
+        await signOut(auth);
+        setUserId(null);
+        setCurrentView('login');
+        showMessage("U bent uitgelogd.", true);
+      } catch (error) {
+        console.error("Fout bij uitloggen:", error);
+        showMessage("Fout bij uitloggen.", false);
+      }
+    }
+  };
+
+  const showMessage = (msg, success) => {
+    setMessage(msg);
+    setIsSuccessMessage(success);
+    setTimeout(() => setMessage(''), 5000); // Clear message after 5 seconds
+  };
+
+  if (!isAuthReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-100 to-indigo-200">
+        <div className="text-xl font-semibold text-gray-700">App wordt geladen...</div>
+      </div>
+    );
+  }
+
+  if (!userId) {
+    return <LoginScreen onLoginSuccess={() => setCurrentView('projects')} auth={auth} showMessage={showMessage} />;
+  }
+
+  return (
+    <AppContext.Provider value={{ db, auth, userId, showMessage, isJSPDFReady, googleCalendarIcsUrl, setGoogleCalendarIcsUrl }}>
+      <div className="min-h-screen bg-gray-100 font-sans text-gray-900">
+        <Header onNavigate={handleNavigate} onLogout={handleLogout} userId={userId} />
+        <main className="container mx-auto p-4 pb-16"> {/* Added padding-bottom to account for fixed bottom nav */}
+          {/* Main content area with responsive padding */}
+          {currentView === 'projects' && <ProjectsPage db={db} userId={userId} onNavigate={handleNavigate} showMessage={showMessage} />}
+          {currentView === 'customers' && <CustomersPage db={db} userId={userId} showMessage={showMessage} />}
+          {currentView === 'materials' && <MaterialsPage db={db} userId={userId} showMessage={showMessage} />}
+          {currentView === 'quoteForm' && <QuoteFormPage db={db} userId={userId} onNavigate={handleNavigate} showMessage={showMessage} />}
+          {currentView === 'projectDetail' && selectedProjectId && (
+            <ProjectDetailPage db={db} userId={userId} projectId={selectedProjectId} onNavigate={handleNavigate} showMessage={showMessage} />
+          )}
+          {currentView === 'weekPlanning' && <WeekPlanningPage db={db} userId={userId} showMessage={showMessage} />}
+          {currentView === 'settings' && <SettingsPage />}
+        </main>
+        <BottomNavBar onNavigate={handleNavigate} currentView={currentView} /> {/* Render BottomNavBar */}
+        <MessageBox message={message} onClose={() => setMessage('')} isSuccess={isSuccessMessage} />
+      </div>
+    </AppContext.Provider>
+  );
 }
+
+export default App;
+
